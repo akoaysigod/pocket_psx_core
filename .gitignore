@@ -1,0 +1,25 @@
+# BIOS and game images: never in git (bring your own)
+*.BIN
+*.bin
+*.cue
+/Castlevania - Symphony of the Night/
+
+# builds and SD card staging
+/builds/
+/SDROOT/
+/releases/
+db/
+incremental_db/
+output_files/
+*.rbf
+*.rbf_r
+*.qws
+*.rpt
+
+# Intel altera_mf simulation library (compiled for nvc)
+/sim/altera_lib/
+
+# simulation work folders
+work/
+
+.DS_Store

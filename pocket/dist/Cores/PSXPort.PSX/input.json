@@ -1,0 +1,20 @@
+{
+    "input": {
+        "magic": "APF_VER_1",
+        "controllers": [
+            {
+                "type": "default",
+                "mappings": [
+                    { "id": 0, "name": "Circle", "key": "pad_btn_a" },
+                    { "id": 1, "name": "Cross", "key": "pad_btn_b" },
+                    { "id": 2, "name": "Triangle", "key": "pad_btn_x" },
+                    { "id": 3, "name": "Square", "key": "pad_btn_y" },
+                    { "id": 4, "name": "L1", "key": "pad_trig_l" },
+                    { "id": 5, "name": "R1", "key": "pad_trig_r" },
+                    { "id": 6, "name": "Select", "key": "pad_btn_select" },
+                    { "id": 7, "name": "Start", "key": "pad_btn_start" }
+                ]
+            }
+        ]
+    }
+}
