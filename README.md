@@ -1,4 +1,4 @@
-# Castlevania: Symphony of the Night on the Analogue Pocket
+# PSX core on the Analogue Pocket
 
 A PlayStation core for the Analogue Pocket, made by trimming the MiSTer PSX core until it fits the Pocket's FPGA
 (Cyclone V 5CEBA4F23C8: 18,480 ALMs, 308 M10K, 66 DSP), with a Pocket wrapper for SDRAM, PSRAM, video, audio,
@@ -42,19 +42,18 @@ Pocket off before switching to another core.
 
 ## Roadmap
 
-1. **L2 / R2 (R2 = turn into the wolf in SotN, after the Soul of Wolf; L2 is not used by Alucard).**
-   - The Pocket's Controls list can't show them: `input.json` allows at most 8 entries, only for the Pocket's own
-     8 buttons. Extra buttons go in Core Settings (`interact.json`) instead, as MIRLO64 does with its "Z / L / R
-     button" and "Modifier" pickers.
-   - The core already passes a docked pad's L2/R2 (APF `cont1_key` bits 10/11, `pocket_psx.vhd`), the same bits
-     MIRLO64 reads for ZL/ZR, so R2 on a Dock controller may already work in the game (not tested yet: it only
-     can't appear in the Controls list).
-   - Plan: Core Settings entries "L2 button" and "R2 button" with the choices Dock L2/R2 (default), Select + L1 /
-     Select + R1 (for the handheld; Select alone is then sent when released, so holding it for a combo doesn't open
-     the map) and None. Needs a few setting registers on the bridge (a free address range in `core_top.v`, synced to
-     clk1x), the key logic in `pocket_psx.vhd`, `interact.json` entries, and room on the chip: the GTE RAM move in
-     item 2 frees ~15 LABs. Then a rebuild with a seed search.
-   - Without a core change, SotN's own System menu "Button settings" may be able to move Wolf to another button.
+1. **L2 / R2 on the handheld: done in branch `controls`, to be tested on hardware (build ctl seed 1).** (R2 =
+   turn into the wolf in SotN, after the Soul of Wolf; L2 is not used by Alucard.) The Pocket's Controls list only
+   has its own 8 buttons (`input.json` allows at most 8 entries), so L2 / R2 come from button combos chosen in Core
+   Settings (`interact.json`, like MIRLO64's pickers), "R2 button" and "L2 button":
+   - Dock R2 / L2 only (default): no change.
+   - Select + R1 / Select + L1: hold Select, press R1 (L1). R1 (L1) alone stays instant; Select (the map) is sent
+     as a tap when released without a combo.
+   - L1 + R1: press both within 50 ms (3 frames). A lone L1 / R1 press (mist, bat) then waits those 50 ms before
+     it reaches the game.
+   A docked controller's L2 / R2 pass in every setting. The logic is `pocket/src/fpga/core/pocket_buttons.vhd`
+   (test: `pocket/sim/pocket_buttons`); room came from moving the GTE's translation-vector RAMs (`itrram` in
+   `rtl/gte_small.vhd`) into M10K, the same change the `cd-audio` branch uses.
 2. **CD audio (CD-DA).** Turned off with `CDDA_ON = false` in `rtl/cd_top.vhd`, because SotN never plays an audio
    track (its music is XA-ADPCM). That silences the BIOS CD player and track 2 (the disc's spoken CD-player warning
    and music). Bringing it back means turning `CDDA_ON` on again (the CD-DA output path and report packets in
@@ -65,17 +64,6 @@ Pocket off before switching to another core.
      Then measure what CD-DA needs with `MAPONLY=1`.
    - Test: an equivalence test of `cd_top.vhd` against upstream (like `sim/dma_equiv`), then the BIOS CD player
      on hardware.
-3. **Easier rebuilds: done in `rtl/sdram.sv`, tested on hardware (build sdB seed 4, 2026-10-15: movies,
-   gameplay, save / quit / reload).** The SDRAM address
-   path (clk1x request -> address pin registers, 9.8 ns) no longer limits: the late CPU request now enters the
-   address / command registers through the last multiplexer only, and the refresh check is a register. The
-   behaviour is unchanged clock for clock (`sim/sdram`, lockstep). 3 of 4 seeds now meet timing everywhere (the
-   4th misses by 13 ps of hold), against 1 of 8 before. The new SDRAM test also found and fixed a DMA write bug
-   (a DMA word arriving during a CPU write could be written into the CPU's row; probably never happens on the
-   console, where the CPU waits during DMA). Still known: the refresh after a write with auto precharge comes one
-   clock short of tWR + tRP (as upstream); a cache line's last words can get the next request's line address if
-   the core asks again one clk1x after ready (as upstream); the SPU reverb address RAM (`irvAddr`, falling-edge
-   M10K) feeds three adders in half a clk1x and can still fail on some seeds.
 
 ## Layout
 
@@ -166,7 +154,7 @@ and `altera_mf.vhd` from a Quartus installation into a library named `altera_mf`
 
 Each `run.sh` has its usage on the first lines. `sim/`: equivalence of the trimmed modules (CD helpers, CPU
 multiplier, DMA, GPU dividers and VRAM, GTE, MDEC stub, memory card 2 removal, RAM primitives, reset-only save
-states, SPU). `pocket/sim/`: the Pocket wrapper (PSRAM controller with a PSRAM model, CD reader, memory card,
+states, SPU). `pocket/sim/`: the Pocket wrapper (PSRAM controller with a PSRAM model, CD reader, memory card, L2 / R2 button combos,
 video, diagnostics page) and a full BIOS boot of the whole core.
 
 `sim/sdram` tests the SDRAM controller (`rtl/sdram.sv`, SystemVerilog) with [Verilator](https://verilator.org) 5 in

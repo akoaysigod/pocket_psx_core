@@ -73,6 +73,7 @@ set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/pocke
 set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/pocket_memcard.vhd ]
 set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/pocket_video.vhd ]
 set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/pocket_diag.vhd ]
+set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/pocket_buttons.vhd ]
 set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/pocket_psx.vhd ]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) core/psx_plls.v ]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) core/sync_fifo.sv ]
