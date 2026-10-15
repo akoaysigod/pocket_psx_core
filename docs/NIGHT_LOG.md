@@ -633,6 +633,50 @@ clk2x -0.47 (85C) / -0.98 (0C): still only the GPU VRAM wrap-length path (gpu.vh
   controller: 1 clean seed of 8.) sdB_s4: 18,223 ALMs, 1,847 LABs, 251 M10K, 0 critical warnings, RamM10Kn inputs
   from clk1x only (+1.478). -> releases/PSXPort.PSX_0.1.0_sdB_s4.zip, for the hardware test.
 
+## 2026-10-14/15: roadmap item 2, CD audio (CD-DA), worktree ../sotn-cdaudio, branch cd-audio
+- rtl/cd_top.vhd: CDDA_ON = true again (CD-DA playback into cd_xa, peak-volume trackers, CD-DA report packets).
+  With it, cd_top is upstream's except the Pocket trims that don't touch CD-DA (fixed Pause time, LibCrypt off,
+  divider-free helpers, reset-only savestate defaults). pocket_cd already streams every track (no change needed for
+  SotN's track 2); the SPU's CD input and reverb path were never trimmed.
+- Area: synthesis +199 ALUTs, +92 registers in cd_top. Full fits with only this change: 1,851 / 1,853 LABs of 1,848
+  (seeds 4 / 1): no fit.
+- Room: GTE translation-vector RAMs (itrram x3, 32 bit x 4) RamMLAB -> RamM10Kn (falling-edge M10K, 3 M10K, frees
+  6 LABs). Also tried all GTE matrix RAMs too (imatram x9, frees 15 LABs): fits (1,845 LABs) but clk2x slow-0C setup
+  -0.129 (the matrix values go through the matrix / MAC-input muxes in half a clk2x cycle) -> not used.
+  Translation only (cdC_s4, before the pocket_cd change below): 1,848 LABs, every corner met (+0.361 setup), 0
+  critical warnings. m10kn_clocks: the GTE RAMs get paths from clk2x and clk1x (CPU-side write port; clk1x edges
+  are clk2x rising edges, so the inputs are stable at the falling edge; STA-checked).
+  sim/gte_small (rtl/gte.vhd vs gte_small): all-M10K variant seeds 2, 3 x 20,000 tests PASS (seed 1 passed in an
+  earlier trial), translation-only seed 4 x 20,000 PASS.
+- New test sim/cd_cdda: our cd_top vs upstream cd_top (ref/upstream/rtl/cd_top.vhd, cd17b5a), both with their
+  translate_off regions removed, same CPU model, each fed by its own sector supplier (pocket_cd-like handshake,
+  per-LBA delay 60-650 us). Disc: track 1 data, track 2 audio with pregap; trackinfo as pocket_cd sends it; audio
+  samples encode (LBA, sample index). CPU model: GetStat, Init, SetMode CD-DA + report, Demute, Play track 2 (700
+  ms), Setloc 20 s into track 2 + Play (500 ms), GetlocP, Stop; interrupts serviced by polling (responses read and
+  acknowledged). Checks: all outputs equal on every clock, and the new instance's CD audio = the sector samples in
+  order. Result: lockstep 0 mismatches, 24,874 samples in order, 0 jumps / bad pairs / repeats, 5 CD-DA reports,
+  GetlocP = track 2, index 1, 00:20:19 / 01:04:19 (as set + 19 sectors). Mutation CDDA_ON = false: 0 samples,
+  19,104,826 clock-mismatches, FAIL.
+- Audio CD for the BIOS CD player: pocket_cd took track 1 as data always. New data slot 15 "Track 1 (audio CD)":
+  used instead of slot 16 it marks track 1 as audio (trackinfo audio bit -> cd_top isAudioCD: GetID answers
+  "audio disc", the BIOS shows its CD player). dsr_id reads track 1 from slot 15. Instance "CD player test (SotN
+  track 2 as an audio CD).json": SotN's track 2 file alone as an audio CD. pocket/sim/pocket_cd: new LAYOUT 3
+  (track 1 in slot 15, track 2 in slot 17): trackinfo (audio bits) and every word of 60 sectors PASS; layouts 0-2
+  still PASS; old pocket_cd (no tracks found), no audio bit, and dsr_id ignoring slot 15 all caught.
+- Final config (CDDA_ON + GTE translation RAMs in M10K + slot 15): cdD_s4 18,231 ALMs, 1,845 LABs, clk2x slow-85C
+  setup -0.013; cdD_s1 1,848 LABs, clk1x fast-0C hold -0.022. Seed chains (cdEs*): s2 no fit (1,849 LABs), s3
+  -0.026 (fast-0C hold clk2x), s5 -0.011, s6 clean (+0.010; chain stopped at s7).
+- cdEs6: 18,215 ALMs, 1,846 LABs, 254 M10K, 55 DSP, 0 critical warnings; setup >= 0.17 everywhere, worst hold
+  +0.010 (fast 0C clk1x). m10kn_clocks: only clk1x / clk2x into RamM10Kn (GTE translation RAMs as in cdC).
+  sim/cd_cdda rerun with the PASS threshold set from the measured count (> 20,000 samples): PASS.
+  -> releases/PSXPort.PSX_0.1.0_cdEs6.zip (bitstream and JSONs checked against the build and pocket/dist), for the
+  hardware test: the "CD player test" entry, then SotN as before (game, movies, saves), then the ending.
+- Correction: track 2 is not the ending song. In the CD player test the user heard a voice saying this is a
+  PlayStation disc, then Castlevania music: the disc's own CD-player warning track. SotN never sends Play
+  (docs/sotn_usage.md) and plays its music as XA, so the ending song is very likely XA too (not checked: the trace
+  didn't reach the ending) and the "very likely I Am the Wind" guess above (and in the 2026-10-12 entry) is wrong.
+  CD audio only serves the BIOS CD player.
+
 ## 2026-10-15: roadmap item 1, L2 / R2 on the handheld (worktree ../sotn-controls, branch controls, from main f3c21e6)
 - Core Settings (interact.json): "R2 button" @ 0x80000000 and "L2 button" @ 0x80000004, list, persist, writeonly,
   default 0: 0 dock only, 1 Select + R1 / L1, 2 L1 + R1. pocket_psx latches the value on clk_74a (low bits, also the
@@ -655,3 +699,16 @@ clk2x -0.47 (85C) / -0.98 (0C): still only the GPU VRAM wrap-length path (gpu.vh
   spu ram_Adr, upstream reset-sequence path, placement dependent; not the new logic), ctls1 clean: 18,158 ALMs,
   1,846 LABs, 254 M10K, 55 DSP, 0 critical warnings, setup >= 0.15 everywhere, worst hold +0.014 (fast 0C clk1x);
   m10kn_clocks only clk1x / clk2x. -> releases/PSXPort.PSX_0.1.0_ctls1.zip (bitstream and JSONs checked).
+
+## 2026-10-15: CD audio + L2 / R2 combos together (branch cd-audio rebased by the user onto main eea7d3b)
+- Commit f55b566 "CD player" had conflict markers in README.md and docs/NIGHT_LOG.md (code unaffected); resolved in
+  the working tree: README follows main (no roadmap item 3), CD-audio "Not supported" bullet removed, items 1 and 2
+  marked tested on hardware; NIGHT_LOG keeps both sections (CD audio, then controls).
+- Fit with both (CDDA_ON, pocket_cd slot 15, pocket_buttons, GTE itrram in M10K): cc_s1 18,215 ALMs, 1,847 LABs,
+  254 M10K, 55 DSP, 0 critical warnings, setup >= 0.289, worst hold +0.024 (fast 0C clk1x); cc_s6 18,243 ALMs,
+  1,848 LABs, worst hold +0.012, also clean. m10kn_clocks (cc_s1): only clk1x / clk2x. Built sources = the
+  committed rtl/ and pocket/. -> releases/PSXPort.PSX_0.1.0_cc_s1.zip (bitstream and JSONs checked), for the
+  hardware test.
+- Release 0.1.2 (main after PR #3, sources = cc_s1): core.json version 0.1.2 / date 2026-10-15, info.txt (CD audio
+  now supported, L2 / R2 settings), README status / roadmap without branch wording, build example SEED=1. Zip from
+  the tested cc_s1 bitstream: releases/PSXPort.PSX_0.1.2_cc_s1.zip.

@@ -7,8 +7,8 @@
             "description": "PlayStation (PSX_MiSTer core, trimmed for the Pocket). Test build: CD games from instance JSONs, memory card 1 saved per game.",
             "author": "PSXPort",
             "url": "https://github.com/MiSTer-devel/PSX_MiSTer",
-            "version": "0.1.0",
-            "date_release": "2026-10-12"
+            "version": "0.1.2",
+            "date_release": "2026-10-15"
         },
         "framework": {
             "target_product": "Analogue Pocket",

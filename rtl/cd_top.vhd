@@ -260,10 +260,10 @@ architecture arch of cd_top is
    signal startPlaying              : std_logic := '0';  
    signal processDataSector         : std_logic := '0';  
    signal processCDDASector         : std_logic := '0';  
-   -- Pocket/SotN: CD audio (CD-DA) tracks are never played by SotN (no Play command, no
-   -- CD-DA read mode), so audio sectors are not forwarded; this removes the CD-DA output
-   -- path, peak-volume tracking and CD-DA report packets. XA-ADPCM is unaffected.
-   constant CDDA_ON : boolean := false;
+   -- CD audio (CD-DA): playback, peak-volume tracking and CD-DA report packets. false removes them (XA-ADPCM is
+   -- unaffected): SotN plays no audio track, only the BIOS CD player needs them (SotN's track 2 is the disc's
+   -- CD-player warning message and music).
+   constant CDDA_ON : boolean := true;
    -- Pocket: no LibCrypt copy-protection emulation (only some PAL games use it; the key for SotN USA is 0,
    -- so the subchannel check below can never trigger). Removes 32 sector-number comparators.
    constant LIBCRYPT_ON : boolean := false;
