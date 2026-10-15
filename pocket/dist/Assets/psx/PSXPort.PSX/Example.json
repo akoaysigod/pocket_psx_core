@@ -1,0 +1,16 @@
+{
+    "instance": {
+        "magic": "APF_VER_1",
+        "data_path": "Example/",
+        "data_slots": [
+            {
+                "id": 16,
+                "filename": "Example (Track 1).bin"
+            },
+            {
+                "id": 17,
+                "filename": "Example (Track 2).bin"
+            }
+        ]
+    }
+}

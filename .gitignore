@@ -2,7 +2,7 @@
 *.BIN
 *.bin
 *.cue
-/Castlevania - Symphony of the Night/
+/games/
 
 # builds and SD card staging
 /builds/

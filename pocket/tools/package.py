@@ -4,7 +4,7 @@
 usage: package.py --rbf ap_core.rbf_r (--out SDROOT | --zip FILE.zip) [--bios scph1001.bin] [--game GAME.cue [--copy-bins]] ...
 
 Creates the SD card layout: everything in pocket/dist (Cores/PSXPort.PSX JSON files, Platforms/psx.json, the
-game entries in Assets/psx/PSXPort.PSX: "BIOS (no disc)" and Castlevania), the bitstream and LICENSE.txt in
+"BIOS (no disc)" entry in Assets/psx/PSXPort.PSX), the bitstream and LICENSE.txt in
 Cores/PSXPort.PSX, and the empty folders the copyrighted files go in: Assets/psx/common (the BIOS, scph1001.bin)
 and Assets/psx/PSXPort.PSX/<game folder> (the game's .bin files). Optionally --bios copies the BIOS in, --game
 writes the entry for another .cue (with --copy-bins also its .bin files). Copy SDROOT's contents to the SD card.
