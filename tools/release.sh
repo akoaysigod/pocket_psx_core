@@ -8,7 +8,7 @@
 #                     "Adding a game"). Can be shared (GPL: with the source).
 #   --bios / --game   also your BIOS / another game's entry (with --copy-bins its .bin files): a complete card for
 #                     yourself. Not to be shared (BIOS and game are copyrighted); the file name ends in _personal.
-# -> releases/PSXPort.PSX_<version from core.json>_<NAME>[_personal].zip
+# -> releases/akoaysigod.PSX_<version from core.json>_<NAME>[_personal].zip
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
 case "$1" in
@@ -26,9 +26,9 @@ case "$1" in
     [ -f "$RBF" ] || { echo "no bitstream at $RBF (build it with tools/build.sh $SRC)"; exit 1; } ;;
 esac
 V=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["core"]["metadata"]["version"])' \
-    "$R/pocket/dist/Cores/PSXPort.PSX/core.json")
+    "$R/pocket/dist/Cores/akoaysigod.PSX/core.json")
 S=""
 case " $* " in *" --bios "*|*" --game "*) S=_personal ;; esac
-python3 "$R/pocket/tools/package.py" --rbf "$RBF" --zip "$R/releases/PSXPort.PSX_${V}_${N}${S}.zip" "$@"
+python3 "$R/pocket/tools/package.py" --rbf "$RBF" --zip "$R/releases/akoaysigod.PSX_${V}_${N}${S}.zip" "$@"
 [ -n "$S" ] && echo "contains your BIOS / game: for your own SD card only"
 exit 0

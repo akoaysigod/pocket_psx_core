@@ -712,3 +712,7 @@ clk2x -0.47 (85C) / -0.98 (0C): still only the GPU VRAM wrap-length path (gpu.vh
 - Release 0.1.2 (main after PR #3, sources = cc_s1): core.json version 0.1.2 / date 2026-10-15, info.txt (CD audio
   now supported, L2 / R2 settings), README status / roadmap without branch wording, build example SEED=1. Zip from
   the tested cc_s1 bitstream: releases/PSXPort.PSX_0.1.2_cc_s1.zip.
+- Repository renamed to github.com/akoaysigod/pocket_psx_core (core.json url). Author PSXPort -> akoaysigod: the
+  Pocket's core folder is author.shortname, so pocket/dist/Cores and Assets/psx folders PSXPort.PSX -> akoaysigod.PSX,
+  package.py / release.sh / cue2instance.py / READMEs / info.txt / Example README updated; zips are now named
+  akoaysigod.PSX_<version>_<build>.zip. package.py into a scratch folder: new layout, nothing else changed.

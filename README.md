@@ -26,7 +26,7 @@ This was 99.99% vibe coded by Opus 5.5 over the course of 3 days or so on the pr
 - Not included and not redistributable: the BIOS (Sony), game images, and Intel's `altera_mf` simulation library
   (`sim/altera_lib`).
 
-## Status (version 0.1.3, same core as 0.1.2: build cc seed 1, 2026-10-15)
+## Status (version 0.1.4, same core as 0.1.2: build cc seed 1, 2026-10-15)
 
 Tested on hardware: the game runs at full speed (60 fps), the opening movies (FMVs) play, memory card saves work
 (saved per game by the Pocket, quit the core to write the file), L2 / R2 come from button combos on the handheld
@@ -74,7 +74,7 @@ Pocket off before switching to another core.
 | --- | --- |
 | `rtl/` | the PSX core (MiSTer sources, trimmed). The build uses the 68 files listed in `pocket/src/fpga/psx_pocket.qip`; the others are upstream originals used by tests (e.g. `gte.vhd`, `savestates.vhd`) |
 | `pocket/src/fpga/` | Quartus project (`ap_core.qpf`), APF framework (`apf/`), Pocket wrapper (`core/`) |
-| `pocket/dist/` | Pocket JSON files (`Cores/PSXPort.PSX`, `Platforms/psx.json`) |
+| `pocket/dist/` | Pocket JSON files (`Cores/akoaysigod.PSX`, `Platforms/psx.json`) |
 | `pocket/tools/` | `package.py` (SD card folders), `cue2instance.py` (game JSON), `rbf_reverse.py` |
 | `pocket/sim/`, `sim/` | simulation tests (nvc), see below |
 | `ref/upstream/rtl/` | upstream versions of `dma`, `spu`, `gpu`, `gpu_poly`, `gpu_line` (references for the tests) |
@@ -101,7 +101,7 @@ Silicon); one full build takes about 35 minutes and ~2 GB of Docker memory.
     tools/build.sh NAME              # full build -> builds/NAME/pocket/src/fpga/output_files/ap_core.rbf_r
     ELAB=1 tools/build.sh NAME       # HDL check only (~1 minute)
     MAPONLY=1 tools/build.sh NAME    # synthesis only (resource estimate)
-    SEED=1 tools/build.sh NAME       # fitter seed (release 0.1.2 = build cc seed 1)
+    SEED=1 tools/build.sh NAME       # fitter seed (releases 0.1.2 to 0.1.4 = build cc seed 1)
 
 The chip is about 99 % full: depending on the fitter seed, a build may not fit or may miss timing by a fraction of a
 nanosecond (with the SDRAM change most seeds pass). `tools/seeds.sh NAME` tries seeds until one fits and meets timing at all four corners (two chains with
@@ -113,17 +113,17 @@ different `SEEDS="..."` can run side by side). Then:
 
 ## Put it on the SD card
 
-    tools/release.sh            # newest build -> releases/PSXPort.PSX_<version>_<build>.zip
+    tools/release.sh            # newest build -> releases/akoaysigod.PSX_<version>_<build>.zip
 
 The zip has the full layout the Pocket expects, with every file except the copyrighted ones. Unzip it at the SD card's
 root, then add your BIOS and games (see "Adding a game" below):
 
-    Cores/PSXPort.PSX/                         bitstream.rbf_r, JSON files, LICENSE.txt
+    Cores/akoaysigod.PSX/                         bitstream.rbf_r, JSON files, LICENSE.txt
     Platforms/psx.json
-    Assets/psx/common/                         <- your BIOS, named scph1001.bin (512 KB)
-    Assets/psx/PSXPort.PSX/BIOS (no disc).json      boots the BIOS menu without a disc
-    Assets/psx/PSXPort.PSX/<Game>.json         <- one entry per game (see below)
-    Assets/psx/PSXPort.PSX/<Game>/             <- that game's .bin files
+    Assets/psx/common/                            <- your BIOS, named scph1001.bin (512 KB)
+    Assets/psx/akoaysigod.PSX/BIOS (no disc).json    boots the BIOS menu without a disc
+    Assets/psx/akoaysigod.PSX/<Game>.json         <- one entry per game (see below)
+    Assets/psx/akoaysigod.PSX/<Game>/             <- that game's .bin files
 
 The zip can be shared (with the source, GPL). `Example.json` and `Example/README.txt` in the zip repeat the steps below.
 
@@ -135,8 +135,8 @@ either build a card with the game in it:
     tools/release.sh --bios SCPH1001.BIN --game "games/<Game>/<Game>.cue" --copy-bins
 
 or make the entry by hand: `python3 pocket/tools/cue2instance.py "games/<Game>/<Game>.cue" "<Game>.json"` writes the
-instance JSON (track 1 = data slot 16, track 2 = slot 17, ...); copy it to `Assets/psx/PSXPort.PSX/` and the `.bin`
-files to `Assets/psx/PSXPort.PSX/<folder named in data_path>/`.
+instance JSON (track 1 = data slot 16, track 2 = slot 17, ...); copy it to `Assets/psx/akoaysigod.PSX/` and the `.bin`
+files to `Assets/psx/akoaysigod.PSX/<folder named in data_path>/`.
 
 Worked example, Symphony of the Night (`games/Castlevania - Symphony of the Night/`, two tracks):
 `pocket/examples/Castlevania - Symphony of the Night.json` is what `cue2instance.py` writes for it, and
@@ -154,7 +154,7 @@ Other forms:
     python3 pocket/tools/package.py --rbf BITSTREAM.rbf_r --out SDROOT [--bios ...] [--game ... --copy-bins]
                                                 # the same layout as a folder
 
-To update only the core on a card that already has everything, copying `bitstream.rbf_r` to `Cores/PSXPort.PSX/` is
+To update only the core on a card that already has everything, copying `bitstream.rbf_r` to `Cores/akoaysigod.PSX/` is
 enough.
 
 The BIOS (`SCPH1001.BIN`) and the game files (`games/`) are not part of this repository (`.gitignore`); bring your own.
