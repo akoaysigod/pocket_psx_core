@@ -6,8 +6,8 @@ disc must be a cue with one .bin file per track (Redump style): track 1 MODE2/23
 other tracks AUDIO with their 2 second pregap inside the file (INDEX 00 00:00:00, INDEX 01 00:02:00).
 
 usage: cue2instance.py GAME.cue [OUT.json]
-Copy OUT.json (default: GAME.json next to the cue) to /Assets/psx/PSXPort.PSX/ on the SD card, and the .bin
-files to /Assets/psx/PSXPort.PSX/<folder of the cue>/.
+Copy OUT.json (default: GAME.json next to the cue) to /Assets/psx/akoaysigod.PSX/ on the SD card, and the .bin
+files to /Assets/psx/akoaysigod.PSX/<folder of the cue>/.
 """
 import json
 import os

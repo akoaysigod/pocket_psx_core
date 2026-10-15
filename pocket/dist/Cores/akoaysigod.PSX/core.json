@@ -5,9 +5,9 @@
             "platform_ids": ["psx"],
             "shortname": "PSX",
             "description": "PlayStation (PSX_MiSTer core, trimmed for the Pocket). Test build: CD games from instance JSONs, memory card 1 saved per game.",
-            "author": "PSXPort",
-            "url": "https://github.com/MiSTer-devel/PSX_MiSTer",
-            "version": "0.1.3",
+            "author": "akoaysigod",
+            "url": "https://github.com/akoaysigod/pocket_psx_core",
+            "version": "0.1.4",
             "date_release": "2026-10-15"
         },
         "framework": {

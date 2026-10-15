@@ -32,11 +32,11 @@ The Pocket loads the bitstream with the bit order of every byte reversed:
 
 Then copy the contents of `SDROOT` to the SD card's root. That gives:
 
-    Cores/PSXPort.PSX/            bitstream.rbf_r + json files
+    Cores/akoaysigod.PSX/                     bitstream.rbf_r + json files
     Platforms/psx.json
     Assets/psx/common/scph1001.bin
-    Assets/psx/PSXPort.PSX/Game.json          (instance JSON: what you select in the Pocket menu)
-    Assets/psx/PSXPort.PSX/<game folder>/     (the .bin files)
+    Assets/psx/akoaysigod.PSX/Game.json          (instance JSON: what you select in the Pocket menu)
+    Assets/psx/akoaysigod.PSX/<game folder>/     (the .bin files)
 
 Games must be one `.bin` per track (Redump style). `tools/cue2instance.py GAME.cue` makes the instance JSON on
 its own. The memory card is saved per game by the Pocket (128 KB raw card, same format as MiSTer's `.sav`).

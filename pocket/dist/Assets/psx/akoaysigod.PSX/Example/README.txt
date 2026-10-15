@@ -1,7 +1,7 @@
 HOW TO ADD A GAME
 =================
 
-Each game needs two things in Assets/psx/PSXPort.PSX/ on the SD card:
+Each game needs two things in Assets/psx/akoaysigod.PSX/ on the SD card:
 
   1. <Game>.json     the entry you pick in the Pocket menu (this folder's Example.json is one)
   2. <Game>/         a folder with the game's .bin files (this folder is Example/)
@@ -25,7 +25,7 @@ By hand
   2. Set "data_path" to your folder name with a trailing slash, e.g. "MyGame/".
   3. Make one data_slots entry per track: id 16 for track 1, 17 for track 2, ... (up to 24 tracks),
      "filename" exactly as the .bin is named.
-  4. Put the .bin files in Assets/psx/PSXPort.PSX/MyGame/.
+  4. Put the .bin files in Assets/psx/akoaysigod.PSX/MyGame/.
 
 Also needed
 -----------

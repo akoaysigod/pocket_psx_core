@@ -9,10 +9,6 @@ Based on [MiSTer-devel/PSX_MiSTer](https://github.com/MiSTer-devel/PSX_MiSTer) a
 (2026-08-21), GPL-2.0 (see `LICENSE`). Upstream originals of the files the equivalence tests compare against are
 in `ref/upstream/rtl/`.
 
-## Vibes
-
-This was 99.99% vibe coded by Opus 5.5 over the course of 3 days or so on the pro plan. For those that are curious, $328.47 in API costs apparently over 7 hours and 18 minutes. A lot of it was waiting for builds and or simulations to complete which costed next to nothing. I have an ARM mac so the tooling does not run natively and is painfully slow in a docker container. Not much to say, I really like SotN and wanted to see if it could run on the Pocket. I may look at a few other games in the future to see how they run on this but I've no intentions of really working on this more outside of fixing any issues that are SotN specific.
-
 ## Licences
 
 - The PSX core (`rtl/`), the Pocket wrapper code written for this port and the tests: GPL, see `LICENSE`
@@ -26,7 +22,7 @@ This was 99.99% vibe coded by Opus 5.5 over the course of 3 days or so on the pr
 - Not included and not redistributable: the BIOS (Sony), game images, and Intel's `altera_mf` simulation library
   (`sim/altera_lib`).
 
-## Status (version 0.1.3, same core as 0.1.2: build cc seed 1, 2026-10-15)
+## Status (version 0.1.4, same core as 0.1.2: build cc seed 1, 2026-10-15)
 
 Tested on hardware: the game runs at full speed (60 fps), the opening movies (FMVs) play, memory card saves work
 (saved per game by the Pocket, quit the core to write the file), L2 / R2 come from button combos on the handheld
@@ -42,31 +38,9 @@ Pocket off before switching to another core.
 
 ## Roadmap
 
-1. **L2 / R2 on the handheld: done, tested on hardware (builds ctl seed 1 and cc seed 1).** (R2 = turn
-   into the wolf in SotN, after the Soul of Wolf; L2 is not used by Alucard.) The Pocket's Controls list only
-   has its own 8 buttons (`input.json` allows at most 8 entries), so L2 / R2 come from button combos chosen in Core
-   Settings (`interact.json`, like MIRLO64's pickers), "R2 button" and "L2 button":
-   - Dock R2 / L2 only (default): no change.
-   - Select + R1 / Select + L1: hold Select, press R1 (L1). R1 (L1) alone stays instant; Select (the map) is sent
-     as a tap when released without a combo.
-   - L1 + R1: press both within 50 ms (3 frames). A lone L1 / R1 press (mist, bat) then waits those 50 ms before
-     it reaches the game.
-   A docked controller's L2 / R2 pass in every setting. The logic is `pocket/src/fpga/core/pocket_buttons.vhd`
-   (test: `pocket/sim/pocket_buttons`); room came from moving the GTE's translation-vector RAMs (`itrram` in
-   `rtl/gte_small.vhd`) into M10K, the same change that made room for CD audio (item 2).
-2. **CD audio (CD-DA): done, tested on hardware (builds cdE seed 6 and cc seed 1: the BIOS CD player plays
-   SotN's track 2).** `CDDA_ON = true` again in `rtl/cd_top.vhd` (CD-DA playback, peak volume, position
-   reports). `pocket_cd.vhd` already streamed every track.
-   - Room: CD-DA needs ~200 LUTs, which didn't fit (1,851-1,853 of 1,848 LABs). The GTE's translation-vector RAMs
-     (`itrram` in `rtl/gte_small.vhd`) moved from `RamMLAB` to `RamM10Kn` (6 LABs freed, 3 M10K). Moving the
-     matrix RAMs too frees 15 LABs but misses clk2x timing (-0.129 ns), so they stay in MLABs. With the L2 / R2
-     combos (item 1) as well it still fits: build cc seed 1, 18,215 ALMs, 1,847 of 1,848 LABs, timing met at all
-     corners (seed 6 too).
-   - Audio CDs: data slot 15 ("Track 1 (audio CD)") instead of 16 marks track 1 as audio, so the BIOS sees an audio
-     CD and shows its CD player. The example entry `pocket/examples/CD player test (SotN track 2 as an audio CD).json` plays SotN's track 2 that
-     way.
-   - Tests: `sim/cd_cdda` (our `cd_top` against upstream's while playing track 2: identical on every clock, the
-     samples come out in order), `pocket/sim/pocket_cd` layout 3 (audio CD), `sim/gte_small`.
+- Random freeze during boot when pressing button?
+- Long loads
+- Boss fight/particles cause frame rate to dip
 
 ## Layout
 
@@ -74,7 +48,7 @@ Pocket off before switching to another core.
 | --- | --- |
 | `rtl/` | the PSX core (MiSTer sources, trimmed). The build uses the 68 files listed in `pocket/src/fpga/psx_pocket.qip`; the others are upstream originals used by tests (e.g. `gte.vhd`, `savestates.vhd`) |
 | `pocket/src/fpga/` | Quartus project (`ap_core.qpf`), APF framework (`apf/`), Pocket wrapper (`core/`) |
-| `pocket/dist/` | Pocket JSON files (`Cores/PSXPort.PSX`, `Platforms/psx.json`) |
+| `pocket/dist/` | Pocket JSON files (`Cores/akoaysigod.PSX`, `Platforms/psx.json`) |
 | `pocket/tools/` | `package.py` (SD card folders), `cue2instance.py` (game JSON), `rbf_reverse.py` |
 | `pocket/sim/`, `sim/` | simulation tests (nvc), see below |
 | `ref/upstream/rtl/` | upstream versions of `dma`, `spu`, `gpu`, `gpu_poly`, `gpu_line` (references for the tests) |
@@ -101,7 +75,7 @@ Silicon); one full build takes about 35 minutes and ~2 GB of Docker memory.
     tools/build.sh NAME              # full build -> builds/NAME/pocket/src/fpga/output_files/ap_core.rbf_r
     ELAB=1 tools/build.sh NAME       # HDL check only (~1 minute)
     MAPONLY=1 tools/build.sh NAME    # synthesis only (resource estimate)
-    SEED=1 tools/build.sh NAME       # fitter seed (release 0.1.2 = build cc seed 1)
+    SEED=1 tools/build.sh NAME       # fitter seed (releases 0.1.2 to 0.1.4 = build cc seed 1)
 
 The chip is about 99 % full: depending on the fitter seed, a build may not fit or may miss timing by a fraction of a
 nanosecond (with the SDRAM change most seeds pass). `tools/seeds.sh NAME` tries seeds until one fits and meets timing at all four corners (two chains with
@@ -113,17 +87,17 @@ different `SEEDS="..."` can run side by side). Then:
 
 ## Put it on the SD card
 
-    tools/release.sh            # newest build -> releases/PSXPort.PSX_<version>_<build>.zip
+    tools/release.sh            # newest build -> releases/akoaysigod.PSX_<version>_<build>.zip
 
 The zip has the full layout the Pocket expects, with every file except the copyrighted ones. Unzip it at the SD card's
 root, then add your BIOS and games (see "Adding a game" below):
 
-    Cores/PSXPort.PSX/                         bitstream.rbf_r, JSON files, LICENSE.txt
+    Cores/akoaysigod.PSX/                         bitstream.rbf_r, JSON files, LICENSE.txt
     Platforms/psx.json
-    Assets/psx/common/                         <- your BIOS, named scph1001.bin (512 KB)
-    Assets/psx/PSXPort.PSX/BIOS (no disc).json      boots the BIOS menu without a disc
-    Assets/psx/PSXPort.PSX/<Game>.json         <- one entry per game (see below)
-    Assets/psx/PSXPort.PSX/<Game>/             <- that game's .bin files
+    Assets/psx/common/                            <- your BIOS, named scph1001.bin (512 KB)
+    Assets/psx/akoaysigod.PSX/BIOS (no disc).json    boots the BIOS menu without a disc
+    Assets/psx/akoaysigod.PSX/<Game>.json         <- one entry per game (see below)
+    Assets/psx/akoaysigod.PSX/<Game>/             <- that game's .bin files
 
 The zip can be shared (with the source, GPL). `Example.json` and `Example/README.txt` in the zip repeat the steps below.
 
@@ -135,8 +109,8 @@ either build a card with the game in it:
     tools/release.sh --bios SCPH1001.BIN --game "games/<Game>/<Game>.cue" --copy-bins
 
 or make the entry by hand: `python3 pocket/tools/cue2instance.py "games/<Game>/<Game>.cue" "<Game>.json"` writes the
-instance JSON (track 1 = data slot 16, track 2 = slot 17, ...); copy it to `Assets/psx/PSXPort.PSX/` and the `.bin`
-files to `Assets/psx/PSXPort.PSX/<folder named in data_path>/`.
+instance JSON (track 1 = data slot 16, track 2 = slot 17, ...); copy it to `Assets/psx/akoaysigod.PSX/` and the `.bin`
+files to `Assets/psx/akoaysigod.PSX/<folder named in data_path>/`.
 
 Worked example, Symphony of the Night (`games/Castlevania - Symphony of the Night/`, two tracks):
 `pocket/examples/Castlevania - Symphony of the Night.json` is what `cue2instance.py` writes for it, and
@@ -154,7 +128,7 @@ Other forms:
     python3 pocket/tools/package.py --rbf BITSTREAM.rbf_r --out SDROOT [--bios ...] [--game ... --copy-bins]
                                                 # the same layout as a folder
 
-To update only the core on a card that already has everything, copying `bitstream.rbf_r` to `Cores/PSXPort.PSX/` is
+To update only the core on a card that already has everything, copying `bitstream.rbf_r` to `Cores/akoaysigod.PSX/` is
 enough.
 
 The BIOS (`SCPH1001.BIN`) and the game files (`games/`) are not part of this repository (`.gitignore`); bring your own.
