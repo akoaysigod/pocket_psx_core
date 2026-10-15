@@ -581,3 +581,54 @@ clk2x -0.47 (85C) / -0.98 (0C): still only the GPU VRAM wrap-length path (gpu.vh
 - README roadmap item 1 rewritten: L2/R2 via Core Settings (interact.json, like MIRLO64's Z/L/R pickers); user only saw R2 missing from the Controls list (input.json limit), Dock R2 in-game untested. No build for now (user's choice).
 - tools/release.sh + package.py --zip: core-only zip (shareable, LICENSE.txt in the core folder) or _personal zip with BIOS/game; releases/ gitignored. Tested with pk20check: zips intact, bitstream and JSONs identical to the sources.
 - release zip now has the full SD layout minus copyrighted files: pocket/dist gained Assets/psx/PSXPort.PSX/{BIOS (no disc).json, Castlevania - Symphony of the Night.json} (file names as on the user's card, without (USA)); package.py copies all of dist and adds the empty folders Assets/psx/common and the game folder; tools/release.sh with no argument uses the newest build. Checked: unzip + BIOS + game .bins = the _personal zip, identical.
+
+## 2026-10-14: roadmap item 3, SDRAM request path (clk1x -> clk3x -> SDRAM_A I/O registers)
+- New test sim/sdram (Verilator 5 in the mirlo-dev image): rtl/sdram.sv vs ref/pk20/rtl/sdram.sv, each with a
+  behavioural SDRAM chip (command timing checks: tRCD tRP tRAS tRC tRRD tWR tRFC tMRD, auto precharge, bus
+  contention, refresh rate) and the same random traffic as the Pocket core drives it (memorymux single / cache-line
+  reads, byte-enable writes, pipelined DMA reads like dma.vhd, SPU ch3, DMA write fifo, refreshForce); every read
+  checked against a reference memory, chip memory compared at the end, latency histograms; LOCKSTEP compares all
+  controller outputs of both on every clock. prep.py splits SDRAM_DQ for Verilator.
+- Findings in the pk20 controller (pre-existing, same upstream): (1) AUTO REFRESH from STATE_IDLE_1 can come one
+  clock short of tWR + tRP after a WRITE with auto precharge (counted as a warning, ~65 per 4 ms of heavy
+  traffic); (2) a cache line's last cache_wr can carry the next request's cache_addr when that request is accepted
+  exactly 12/14 clk3x after the line (only if the core asks again 1 clk1x after ready; GAP_MIN 0/1).
+- Variant 1, request buffering (archived as psx_pocket_work/sdram.rqbuf_variant.sv): ch1/ch2 registered on the
+  clk3xIndex edge, started one clk3x later, early ready / dma_done at bit 7 in phase 2 ({dq_reg, ch1_dout[15:0]}).
+  Correct (0 errors, avoids race 2), but latency mixed vs pk20 (4 ms seed 1, clk1x means: read 3.82/4.00,
+  DMA 4.97/5.24, cache line 4.87/4.72, write 1.81/1.73, SPU write 4.77/4.51): transactions end one clk3x later.
+  Not used.
+- Variant 2 (rtl/sdram.sv now): same behaviour, restructured. ch1/ch2 no longer set SDRAM_A / SDRAM_BA / command /
+  chip in the STATE_IDLE priority chain; ch3 sets them at the top of STATE_IDLE without looking at ch1/ch2, and
+  one assignment after the case overrides them for a ch1/ch2 start (state == IDLE, no refresh, fifo empty,
+  ch1_req|ch1_rq|ch2_req|ch2_rq). The late request reaches the I/O registers through the last multiplexer only.
+  sim/sdram LOCKSTEP 4 ms seed 1: 0 clocks with a difference, identical latency tables. Battery (4 seeds x 20 ms
+  gap 2, gap 1 and 0, two mutations) and builds sdA_s1 / sdA_s3 (pk20 seeds 1 and 3 missed by 0.13-0.14 ns) running.
+- sim/sdram fixes: the DMA fifo producer did nothing at first (Verilator 5.020 dropped the always block's updates
+  through a function with an inout argument; pure function now) - the first lockstep results had no fifo traffic.
+  Coverage counters added (idle clocks where ch1/ch2 decides against the fifo / ch3 / refresh). Fifo writes now
+  stay in the 2 MByte main RAM like the real DMA (the merge compares address bits [20:10] only).
+- FOUND (pre-existing, upstream logic): RW2 merges the next DMA fifo word into the open row also at the end of a
+  ch2 (CPU) write (ch = 1 for both), comparing against lastbank = the row of the last FIFO write: a fifo word
+  arriving during a CPU write to another row went into the CPU's row (pk20 in the test: 556 / 44 errors on seeds
+  4 / 1). Probably never on hardware (the CPU is paused while the DMA fills the fifo). Fix: saved_fifo (set by a
+  fifo start, cleared by ch1/ch2/ch3 starts) gates the merge. ref/pk20/rtl/sdram_fifofix.sv = pk20 + only this
+  fix, the default lockstep reference of sim/sdram/run.sh.
+- Battery (rtl/sdram.sv = restructure + fifo fix vs pk20 + fifo fix): gap 2 seeds 1-4 x 20 ms PASS, lockstep 0;
+  gap 1 / 0: identical in both (only the known cache-line race); mutations caught: no ch1_rq/ch2_rq in the
+  override (127,961 clocks differ), no dmafifo priority (7,384), no fifo fix (556 errors); pk20 original shows
+  the bug (556 errors).
+- Builds of the restructure (without the fifo fix, which is off the critical path): sdA_s1: clk3x setup +0.182
+  (pk20 seed 1: -0.130), worst clk3x path now refresh_count -> SDRAM_A (the 14-bit refresh compare); clk1x slow-0C
+  setup -0.418 on spu RamM10Kn irvAddr -> ram_Adr (half-cycle path of the pk19 MLAB->M10K move, placement
+  dependent: passed in pk20s7); fast-corner hold -0.025. sdA_s3: all setup met (pk20 seed 3: -0.141), only hold
+  -0.074 / -0.055 at fast corners.
+- refresh_due: registered (refresh_count > cycles_per_refresh) computed from the next value (rc_next, blocking
+  temp for every refresh_count assignment); used in STATE_IDLE / IDLE_1 and the override. sim/sdram lockstep
+  seeds 1, 4 (gap 2), 6 (gap 0): 0 differences; mutation "computed from refresh_count" (one clock late) caught
+  (354,292 clocks differ).
+- sdB = final controller (restructure + fifo fix + refresh_due): seeds 1-4 building.
+- sdB (restructure + fifo fix + refresh_due) seeds 1-4: s1 +0.015, s2 +0.024, s4 +0.027 (all corners clean),
+  s3 -0.013 (fast-0C hold only); setup >= 0.07 everywhere, the spu irvAddr half-cycle path did not show up. (pk20
+  controller: 1 clean seed of 8.) sdB_s4: 18,223 ALMs, 1,847 LABs, 251 M10K, 0 critical warnings, RamM10Kn inputs
+  from clk1x only (+1.478). -> releases/PSXPort.PSX_0.1.0_sdB_s4.zip, for the hardware test.
