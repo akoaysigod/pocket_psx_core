@@ -36,6 +36,17 @@
                 "address": "0x20000000"
             },
             {
+                "name": "Track 1 (audio CD)",
+                "id": 15,
+                "required": false,
+                "parameters": "0x2",
+                "deferload": true,
+                "secondary": true,
+                "extensions": [
+                    "bin"
+                ]
+            },
+            {
                 "name": "Track 1",
                 "id": 16,
                 "required": false,

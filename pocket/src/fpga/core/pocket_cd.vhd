@@ -3,11 +3,12 @@
 --
 -- Disc: one .bin file per track (Redump style cue: track 1 MODE2/2352 data, further tracks AUDIO with their
 -- 2 s pregap inside the file and INDEX 01 at 00:02:00). Track k (0 based) is the deferred-load APF data slot
--- TRACK_ID_BASE + k. Layout as psx.cpp builds it for such a cue:
+-- TRACK_ID_BASE + k. Audio CD: track 1 in slot TRACK_ID_BASE - 1 instead of TRACK_ID_BASE (not both), which
+-- marks track 1 as audio. Layout as psx.cpp builds it for such a cue:
 --   track 0: LBA 150 .. 150 + N0 - 1 (LBA 0..149 = 2 s pregap, read as zeros), file offset (LBA - 150) * 2352
 --   track k: starts right after track k-1, file offset (LBA - start) * 2352
 --   trackinfo: header (count, total, MM:SS of total, libcrypt/region = 0), per track
---   {start (0 for track 0), end, MM:SS of start + 150 | audio << 16, 0}
+--   {start (0 for track 0), end, MM:SS of start + 150 | audio << 16, 0} (audio: all tracks but a data track 1)
 -- Sizes come from the APF data slot table (core_bridge_cmd datatable: entry e = {id, size} at words 2e, 2e+1),
 -- read when APF releases reset_n; the core is held in reset (cd_ready = '0') until the table is built.
 -- Sector reads: target command 0x0180 (data slot read, 2352 bytes) into the sector buffer at bridge address
@@ -89,6 +90,7 @@ architecture arch of pocket_cd is
    signal tab_q      : std_logic_vector(19 downto 0);
    signal k          : unsigned(4 downto 0) := (others => '0');
    signal ntracks    : unsigned(4 downto 0) := (others => '0');
+   signal audio_cd   : std_logic := '0';   -- track 1 is audio (slot TRACK_ID_BASE - 1)
    signal total      : unsigned(19 downto 0) := (others => '0');
 
    -- sequential divider (restoring, 32 steps): div_n / div_d -> quotient in div_n, remainder in div_r
@@ -158,7 +160,9 @@ architecture arch of pocket_cd is
 begin
 
    dsr_bridgeaddr <= BUF_BASE & x"0000000";
-   dsr_id         <= std_logic_vector(to_unsigned(TRACK_ID_BASE - 1, 16) + k);   -- k is stable during a read
+   -- k (1 based track number) is stable during a read; audio CD: track 1 from slot TRACK_ID_BASE - 1
+   dsr_id         <= std_logic_vector(to_unsigned(TRACK_ID_BASE - 1, 16)) when (k = 1 and audio_cd = '1') else
+                     std_logic_vector(to_unsigned(TRACK_ID_BASE - 1, 16) + k);
 
    with div_sel select div_d <=
       to_unsigned(SECTOR_BYTES, 12) when 0,
@@ -204,7 +208,8 @@ begin
             case (st) is
 
                when S_WAITRESET =>              -- no handshake with the clk1x side still open
-                  k <= (others => '0');
+                  k        <= (others => '0');
+                  audio_cd <= '0';
                   if (ti_ack_s(2) = ti_req and sec_ack_s(2) = sec_tog) then
                      st <= S_CLEAR;
                   end if;
@@ -241,7 +246,7 @@ begin
                   end if;
 
                when S_DT_CHECK =>
-                  if (dt_id >= TRACK_ID_BASE and dt_id < TRACK_ID_BASE + MAX_TRACKS and div_n /= 0) then
+                  if (dt_id >= TRACK_ID_BASE - 1 and dt_id < TRACK_ID_BASE + MAX_TRACKS and div_n /= 0) then
                      div_ret <= S_DT_STORE;
                      st      <= S_DIV;
                   else
@@ -251,6 +256,10 @@ begin
                when S_DT_STORE =>
                   tab_we <= '1';
                   tab_wa <= std_logic_vector(resize(dt_id - TRACK_ID_BASE, 5));
+                  if (dt_id = TRACK_ID_BASE - 1) then   -- audio CD: track 1
+                     tab_wa   <= (others => '0');
+                     audio_cd <= '1';
+                  end if;
                   tab_d  <= std_logic_vector(div_n(19 downto 0));
                   st     <= S_DT_NEXT;
 
@@ -337,6 +346,7 @@ begin
                         when "10" =>            -- MM:SS of start + 150 (track 1: of 150), audio flag
                            if (kk = 0) then
                               divide(div_n, div_sel, div_r, div_cnt, to_unsigned(150, 20), 75);
+                              msf_audio <= audio_cd;
                            else
                               divide(div_n, div_sel, div_r, div_cnt, unsigned(tab_q) + 150, 75);
                               msf_audio <= '1';

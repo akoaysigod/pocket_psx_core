@@ -31,10 +31,13 @@ This was 99.99% vibe coded by Opus 5.5 over the course of 3 days or so on the pr
 Tested on hardware: the game runs at full speed (60 fps), the opening movies (FMVs) play, memory card saves work
 (saved per game by the Pocket, quit the core to write the file).
 
+Branch `cd-audio`: CD audio tracks (CD-DA) are on again, for the BIOS CD player and SotN's track 2 (a spoken
+"this is a PlayStation disc" warning followed by music, for people who put the disc in a CD player); tested on
+hardware on its own (roadmap item 2). Build cc seed 1 has CD audio and the L2 / R2 combos together (to be tested
+on hardware). SotN itself plays no CD audio: its music, very likely including the ending song, is XA-ADPCM, which
+works in every build.
+
 Not supported:
-- **CD audio tracks (CD-DA).** SotN plays none: its music, very likely including the ending song, is XA-ADPCM,
-  which works. Silent: the BIOS CD player and track 2 (a spoken "this is a PlayStation disc" warning followed by
-  music, for people who put the disc in a CD player).
 - Save states, memory card 2, EXE loading, LibCrypt, cheats, the newest CD Pause timing refinement (upstream `cd17b5a`).
 
 After a build from this core has run, the Pocket's PSRAM stays in synchronous mode until power-off: power the
@@ -42,8 +45,8 @@ Pocket off before switching to another core.
 
 ## Roadmap
 
-1. **L2 / R2 on the handheld: done in branch `controls`, to be tested on hardware (build ctl seed 1).** (R2 =
-   turn into the wolf in SotN, after the Soul of Wolf; L2 is not used by Alucard.) The Pocket's Controls list only
+1. **L2 / R2 on the handheld: done, tested on hardware (build ctl seed 1).** (R2 = turn into
+   the wolf in SotN, after the Soul of Wolf; L2 is not used by Alucard.) The Pocket's Controls list only
    has its own 8 buttons (`input.json` allows at most 8 entries), so L2 / R2 come from button combos chosen in Core
    Settings (`interact.json`, like MIRLO64's pickers), "R2 button" and "L2 button":
    - Dock R2 / L2 only (default): no change.
@@ -54,16 +57,19 @@ Pocket off before switching to another core.
    A docked controller's L2 / R2 pass in every setting. The logic is `pocket/src/fpga/core/pocket_buttons.vhd`
    (test: `pocket/sim/pocket_buttons`); room came from moving the GTE's translation-vector RAMs (`itrram` in
    `rtl/gte_small.vhd`) into M10K, the same change the `cd-audio` branch uses.
-2. **CD audio (CD-DA).** Turned off with `CDDA_ON = false` in `rtl/cd_top.vhd`, because SotN never plays an audio
-   track (its music is XA-ADPCM). That silences the BIOS CD player and track 2 (the disc's spoken CD-player warning
-   and music). Bringing it back means turning `CDDA_ON` on again (the CD-DA output path and report packets in
-   `cd_top`) and checking that `pocket_cd.vhd` streams audio sectors from the track 2 `.bin` fast enough.
-   - Room: the chip is full (18,152 of 18,480 ALMs, 1,846 of 1,848 LABs). Moving the GTE's matrix and
-     translation RAMs (`imatram` / `itrram` in `rtl/gte_small.vhd`) from `RamMLAB` to `RamM10Kn` frees ~15 LABs
-     (57 M10K blocks are free). It is a two-line change and already passed `sim/gte_small` (seed 1) in a trial.
-     Then measure what CD-DA needs with `MAPONLY=1`.
-   - Test: an equivalence test of `cd_top.vhd` against upstream (like `sim/dma_equiv`), then the BIOS CD player
-     on hardware.
+2. **CD audio (CD-DA): done in branch `cd-audio`, tested on hardware (build cdE seed 6: the BIOS CD player plays
+   SotN's track 2).** `CDDA_ON = true` again in `rtl/cd_top.vhd` (CD-DA playback, peak volume, position
+   reports). `pocket_cd.vhd` already streamed every track.
+   - Room: CD-DA needs ~200 LUTs, which didn't fit (1,851-1,853 of 1,848 LABs). The GTE's translation-vector RAMs
+     (`itrram` in `rtl/gte_small.vhd`) moved from `RamMLAB` to `RamM10Kn` (6 LABs freed, 3 M10K). Moving the
+     matrix RAMs too frees 15 LABs but misses clk2x timing (-0.129 ns), so they stay in MLABs. With the L2 / R2
+     combos (item 1) as well it still fits: build cc seed 1, 18,215 ALMs, 1,847 of 1,848 LABs, timing met at all
+     corners (seed 6 too).
+   - Audio CDs: data slot 15 ("Track 1 (audio CD)") instead of 16 marks track 1 as audio, so the BIOS sees an audio
+     CD and shows its CD player. The entry "CD player test (SotN track 2 as an audio CD)" plays SotN's track 2 that
+     way.
+   - Tests: `sim/cd_cdda` (our `cd_top` against upstream's while playing track 2: identical on every clock, the
+     samples come out in order), `pocket/sim/pocket_cd` layout 3 (audio CD), `sim/gte_small`.
 
 ## Layout
 
@@ -120,6 +126,8 @@ root, then put your own files in the two empty folders:
     Assets/psx/common/                         <- your BIOS, named scph1001.bin (512 KB)
     Assets/psx/PSXPort.PSX/BIOS (no disc).json      boots the BIOS menu without a disc
     Assets/psx/PSXPort.PSX/Castlevania - Symphony of the Night.json
+    Assets/psx/PSXPort.PSX/CD player test (SotN track 2 as an audio CD).json
+                                               the BIOS CD player with SotN's track 2 as an audio CD
     Assets/psx/PSXPort.PSX/Castlevania - Symphony of the Night/
                                                <- Castlevania - Symphony of the Night (Track 1).bin and (Track 2).bin
 
@@ -153,8 +161,9 @@ and `altera_mf.vhd` from a Quartus installation into a library named `altera_mf`
     BIOS=$PWD/SCPH1001.BIN ALTERA_MF_DIR=$PWD/sim/altera_lib sh pocket/sim/boot/run.sh 400   # BIOS boot, ms
 
 Each `run.sh` has its usage on the first lines. `sim/`: equivalence of the trimmed modules (CD helpers, CPU
-multiplier, DMA, GPU dividers and VRAM, GTE, MDEC stub, memory card 2 removal, RAM primitives, reset-only save
-states, SPU). `pocket/sim/`: the Pocket wrapper (PSRAM controller with a PSRAM model, CD reader, memory card, L2 / R2 button combos,
+multiplier, CD audio playback against upstream's `cd_top`, DMA, GPU dividers and VRAM, GTE, MDEC stub, memory
+card 2 removal, RAM primitives, reset-only save states, SPU). `pocket/sim/`: the Pocket wrapper (PSRAM controller
+with a PSRAM model, CD reader, memory card, L2 / R2 button combos,
 video, diagnostics page) and a full BIOS boot of the whole core.
 
 `sim/sdram` tests the SDRAM controller (`rtl/sdram.sv`, SystemVerilog) with [Verilator](https://verilator.org) 5 in

@@ -4,7 +4,7 @@
 #   NAME              a finished build: builds/NAME/pocket/src/fpga/output_files/ap_core.rbf_r
 #   BITSTREAM.rbf_r   or a bitstream file directly; neither: the newest build in builds/
 #   no options        every file except the copyrighted ones: the core (bitstream, JSON files, LICENSE.txt),
-#                     Platforms/psx.json, the game entries ("BIOS (no disc)", Castlevania) and the empty folders
+#                     Platforms/psx.json, the game entries ("BIOS (no disc)", Castlevania, the CD player test) and the empty folders
 #                     for them: put scph1001.bin in Assets/psx/common and the game's .bin files in
 #                     Assets/psx/PSXPort.PSX/Castlevania - Symphony of the Night. Can be shared (GPL: with the source).
 #   --bios / --game   also your BIOS / another game's entry (with --copy-bins its .bin files): a complete card for

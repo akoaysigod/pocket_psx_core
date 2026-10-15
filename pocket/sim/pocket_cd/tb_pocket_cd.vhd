@@ -15,7 +15,7 @@ entity tb_pocket_cd is
    (
       NUM_REQ  : integer := 60;
       SEED     : integer := 1;
-      LAYOUT   : integer := 0;     -- 0: SotN (2 tracks), 1: 5 tracks, 2: no disc
+      LAYOUT   : integer := 0;     -- 0: SotN (2 tracks), 1: 5 tracks, 2: no disc, 3: audio CD (track 1 in slot 15)
       MUTATION : integer := 0      -- testbench self check: 1 = expect the wrong file offset
    );
 end entity;
@@ -63,6 +63,7 @@ architecture sim of tb_pocket_cd is
       case layout is
          when 0 => return (229020, 18995);                   -- SotN (USA) track sizes / 2352
          when 1 => return (1000, 300, 2, 77, 4501);
+         when 3 => return (18995, 1200);
          when others => return (0 => 0);
       end case;
    end function;
@@ -79,6 +80,18 @@ architecture sim of tb_pocket_cd is
    function ntracks return integer is
    begin
       if (LAYOUT = 2) then return 0; else return NT; end if;
+   end function;
+
+   -- data slot of track t (0 based): audio CD track 1 in slot TRACK_ID_BASE - 1
+   function slot(t : integer) return integer is
+   begin
+      if (LAYOUT = 3 and t = 0) then return TRACK_ID_BASE - 1; else return TRACK_ID_BASE + t; end if;
+   end function;
+
+   -- trackinfo audio flag of track t
+   function audio(t : integer) return integer is
+   begin
+      if (t > 0 or LAYOUT = 3) then return 65536; else return 0; end if;
    end function;
 
    function bcd(v : integer) return integer is begin return (v / 10) * 16 + (v mod 10); end function;
@@ -128,7 +141,7 @@ begin
       e := 2;
       if (LAYOUT /= 2) then
          for t in NT - 1 downto 0 loop
-            datatable(2 * e)     <= std_logic_vector(to_unsigned(TRACK_ID_BASE + t, 32));
+            datatable(2 * e)     <= std_logic_vector(to_unsigned(slot(t), 32));
             datatable(2 * e + 1) <= std_logic_vector(to_unsigned(SECS(t) * 2352, 32));
             e := e + 1;
          end loop;
@@ -150,7 +163,7 @@ begin
    ---------------------------------------------------------------- APF: data slot read command
    process
       variable u    : real;
-      variable id, offs, len : integer;
+      variable id, offs, len, t : integer;
       variable last : std_logic := '0';
    begin
       wait until rising_edge(clk_74a);
@@ -160,8 +173,12 @@ begin
          len  := to_integer(unsigned(dsr_length));
          assert dsr_bridgeaddr = x"40000000" report "bridge address" severity failure;
          assert len = 2352 report "length" severity failure;
-         assert id >= TRACK_ID_BASE and id < TRACK_ID_BASE + NT report "slot id " & integer'image(id) severity failure;
-         assert offs + len <= SECS(id - TRACK_ID_BASE) * 2352 report "read past end of slot" severity failure;
+         t := -1;
+         for i in 0 to NT - 1 loop
+            if (slot(i) = id) then t := i; end if;
+         end loop;
+         assert t >= 0 report "slot id " & integer'image(id) severity failure;
+         assert offs + len <= SECS(t) * 2352 report "read past end of slot" severity failure;
          wait until rising_edge(clk_74a);
          wait until rising_edge(clk_74a);
          dsr_done <= '0';
@@ -243,7 +260,7 @@ begin
          for i in 0 to NT - 1 loop
             if (i = 0) then check_ti(4, 0); else check_ti(4 + 4 * i, first_lba(i)); end if;
             check_ti(5 + 4 * i, first_lba(i + 1) - 1);
-            if (i = 0) then check_ti(6, msf(150)); else check_ti(6 + 4 * i, msf(first_lba(i) + 150) + 65536); end if;
+            if (i = 0) then check_ti(6, msf(150) + audio(0)); else check_ti(6 + 4 * i, msf(first_lba(i) + 150) + audio(i)); end if;
             check_ti(7 + 4 * i, 0);
          end loop;
          report "trackinfo: " & integer'image(ti_count) & " words, total LBA " & integer'image(total) &
@@ -292,7 +309,7 @@ begin
                   else
                      o := (l - first_lba(t)) * 2352 + (nwords / 2) * 4;
                      if (MUTATION = 1) then o := o + 4; end if;
-                     expw := fileword(TRACK_ID_BASE + t, o);
+                     expw := fileword(slot(t), o);
                      if (nwords mod 2 = 0) then exph := expw(15 downto 0); else exph := expw(31 downto 16); end if;
                   end if;
                   if (data /= exph) then
