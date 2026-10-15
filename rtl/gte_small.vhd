@@ -372,7 +372,7 @@ begin
       signal we : std_logic;
    begin
       we <= '1' when (shadowWe = '1' and gte_writeAddr(5) = '1' and gte_writeAddr(4 downto 3) /= "11" and to_integer(gte_writeAddr(2 downto 0)) = 5 + t) else '0';
-      itrram : entity mem.RamMLAB
+      itrram : entity mem.RamM10Kn  -- Pocket: M10K on the falling edge instead of MLAB (frees LABs)
       generic map (width => 32, widthad => 2)
       port map (inclock => clk2x, wren => we, data => std_logic_vector(gte_writeData), wraddress => std_logic_vector(gte_writeAddr(4 downto 3)),
                 rdaddress => trCode(t), q => trQ(t));

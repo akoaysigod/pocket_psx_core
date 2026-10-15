@@ -6,7 +6,8 @@
 --  * CD: track files streamed sector by sector from APF data slots (pocket_cd)
 --  * memory card 1: the APF save slot (0x20000000) loaded into / read back from the core's card in PSRAM
 --    (pocket_memcard)
---  * controller 1 (APF cont1_key) -> PSX digital pad
+--  * controller 1 (APF cont1_key) -> PSX digital pad, L2 / R2 also from button combos (pocket_buttons) as chosen in
+--    Core Settings (interact.json: bridge writes to 0x80000000 / 0x80000004)
 --  * video: core output (clkvid, 53.69 MHz, one pixel per video_ce) -> Pocket scaler signals on clkpix (half of
 --    clkvid, same PLL; APF takes pixel clocks up to ~50 MHz), video_skip on clocks without a new pixel, scaler slot
 --    0-4 = width 256/320/368/512/640 sent when DE falls
@@ -207,6 +208,9 @@ architecture arch of pocket_psx is
 
    -- controller
    signal keys_s1, keys_s2 : std_logic_vector(15 downto 0) := (others => '0');
+   signal keys_pad       : std_logic_vector(15 downto 0);
+   signal cfg_r2_74, cfg_l2_74 : std_logic_vector(1 downto 0) := "00";   -- Core Settings "R2 button" / "L2 button"
+   signal cfg_s1, cfg_s2 : std_logic_vector(3 downto 0) := (others => '0');
 
    -- video
    signal hblank, vblank, hsync, vsync, video_ce : std_logic;
@@ -300,13 +304,32 @@ begin
    ch3_rnw  <= '0'                      when (psx_reset = '1') else spu_rnw;
 
    ---------------------------------------------------------------- controller 1
+   -- Core Settings pickers (interact.json, written by APF when changed and at start for persisted values; 0 until
+   -- then = the default): value in the low bits, also taken from the top byte in case it arrives byte-swapped
+   process (clk_74a)
+   begin
+      if rising_edge(clk_74a) then
+         if (bridge_wr = '1' and bridge_addr = x"80000000") then
+            cfg_r2_74 <= bridge_wr_data(1 downto 0) or bridge_wr_data(25 downto 24);
+         end if;
+         if (bridge_wr = '1' and bridge_addr = x"80000004") then
+            cfg_l2_74 <= bridge_wr_data(1 downto 0) or bridge_wr_data(25 downto 24);
+         end if;
+      end if;
+   end process;
+
    process (clk1x)
    begin
       if rising_edge(clk1x) then
          keys_s1 <= cont1_key(15 downto 0);
          keys_s2 <= keys_s1;
+         cfg_s1  <= cfg_r2_74 & cfg_l2_74;   -- static settings: a plain two-register sync is enough
+         cfg_s2  <= cfg_s1;
       end if;
    end process;
+
+   ibuttons : entity work.pocket_buttons
+   port map (clk => clk1x, cfg_r2 => cfg_s2(3 downto 2), cfg_l2 => cfg_s2(1 downto 0), keys_in => keys_s2, keys_out => keys_pad);
 
    ---------------------------------------------------------------- the core
    ipsx : entity work.psx_pocket_core
@@ -342,10 +365,10 @@ begin
       video_hResMode => video_hResMode,
       -- APF cont1_key: 0 up, 1 down, 2 left, 3 right, 4 A, 5 B, 6 X, 7 Y, 8 L1, 9 R1, 10 L2, 11 R2,
       -- 12 L3, 13 R3, 14 select, 15 start. PSX: cross = B, circle = A, square = Y, triangle = X.
-      KeyUp => keys_s2(0), KeyDown => keys_s2(1), KeyLeft => keys_s2(2), KeyRight => keys_s2(3),
-      KeyCircle => keys_s2(4), KeyCross => keys_s2(5), KeyTriangle => keys_s2(6), KeySquare => keys_s2(7),
-      KeyL1 => keys_s2(8), KeyR1 => keys_s2(9), KeyL2 => keys_s2(10), KeyR2 => keys_s2(11),
-      KeyL3 => keys_s2(12), KeyR3 => keys_s2(13), KeySelect => keys_s2(14), KeyStart => keys_s2(15),
+      KeyUp => keys_pad(0), KeyDown => keys_pad(1), KeyLeft => keys_pad(2), KeyRight => keys_pad(3),
+      KeyCircle => keys_pad(4), KeyCross => keys_pad(5), KeyTriangle => keys_pad(6), KeySquare => keys_pad(7),
+      KeyL1 => keys_pad(8), KeyR1 => keys_pad(9), KeyL2 => keys_pad(10), KeyR2 => keys_pad(11),
+      KeyL3 => keys_pad(12), KeyR3 => keys_pad(13), KeySelect => keys_pad(14), KeyStart => keys_pad(15),
       sound_out_left => snd_l, sound_out_right => snd_r, debug_out => core_debug
    );
 
