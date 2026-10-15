@@ -26,14 +26,15 @@ This was 99.99% vibe coded by Opus 5.5 over the course of 3 days or so on the pr
 - Not included and not redistributable: the BIOS (Sony), game images, and Intel's `altera_mf` simulation library
   (`sim/altera_lib`).
 
-## Status (build pk20, 2026-10-14)
+## Status (build sdB seed 4, 2026-10-15)
 
 Tested on hardware: the game runs at full speed (60 fps), the opening movies (FMVs) play, memory card saves work
 (saved per game by the Pocket, quit the core to write the file).
 
 Not supported:
-- **CD audio tracks (CD-DA).** SotN doesn't play them during the game. Track 2 (4:11, very likely the ending song
-  "I Am the Wind") stays silent, and so does the BIOS CD player. XA-ADPCM music works.
+- **CD audio tracks (CD-DA).** SotN plays none: its music, very likely including the ending song, is XA-ADPCM,
+  which works. Silent: the BIOS CD player and track 2 (a spoken "this is a PlayStation disc" warning followed by
+  music, for people who put the disc in a CD player).
 - Save states, memory card 2, EXE loading, LibCrypt, cheats, the newest CD Pause timing refinement (upstream `cd17b5a`).
 
 After a build from this core has run, the Pocket's PSRAM stays in synchronous mode until power-off: power the
@@ -55,20 +56,26 @@ Pocket off before switching to another core.
      item 2 frees ~15 LABs. Then a rebuild with a seed search.
    - Without a core change, SotN's own System menu "Button settings" may be able to move Wolf to another button.
 2. **CD audio (CD-DA).** Turned off with `CDDA_ON = false` in `rtl/cd_top.vhd`, because SotN never plays an audio
-   track during the game. That silences track 2 (4:11, very likely the ending song "I Am the Wind") and the BIOS CD
-   player. Bringing it back means turning `CDDA_ON` on again (the CD-DA output path and report packets in
+   track (its music is XA-ADPCM). That silences the BIOS CD player and track 2 (the disc's spoken CD-player warning
+   and music). Bringing it back means turning `CDDA_ON` on again (the CD-DA output path and report packets in
    `cd_top`) and checking that `pocket_cd.vhd` streams audio sectors from the track 2 `.bin` fast enough.
    - Room: the chip is full (18,152 of 18,480 ALMs, 1,846 of 1,848 LABs). Moving the GTE's matrix and
      translation RAMs (`imatram` / `itrram` in `rtl/gte_small.vhd`) from `RamMLAB` to `RamM10Kn` frees ~15 LABs
      (57 M10K blocks are free). It is a two-line change and already passed `sim/gte_small` (seed 1) in a trial.
      Then measure what CD-DA needs with `MAPONLY=1`.
    - Test: an equivalence test of `cd_top.vhd` against upstream (like `sim/dma_equiv`), then the BIOS CD player
-     and the ending on hardware.
-3. **Easier rebuilds (optional).** The SDRAM address path (clk1x request -> `sdram.sv` idle state -> address pin
-   register, 9.8 ns at clk3x) depends on placement: pk20 seeds 1 and 3 missed it by 0.13-0.14 ns, seed 7 has
-   0.9 ns to spare, so each rebuild needs a seed search (`tools/seeds.sh`). Registering the request in `sdram.sv`
-   would fix that at the cost of ~10 ns more memory latency; only worth it if more rebuilds are coming (e.g. for
-   item 2).
+     on hardware.
+3. **Easier rebuilds: done in `rtl/sdram.sv`, tested on hardware (build sdB seed 4, 2026-10-15: movies,
+   gameplay, save / quit / reload).** The SDRAM address
+   path (clk1x request -> address pin registers, 9.8 ns) no longer limits: the late CPU request now enters the
+   address / command registers through the last multiplexer only, and the refresh check is a register. The
+   behaviour is unchanged clock for clock (`sim/sdram`, lockstep). 3 of 4 seeds now meet timing everywhere (the
+   4th misses by 13 ps of hold), against 1 of 8 before. The new SDRAM test also found and fixed a DMA write bug
+   (a DMA word arriving during a CPU write could be written into the CPU's row; probably never happens on the
+   console, where the CPU waits during DMA). Still known: the refresh after a write with auto precharge comes one
+   clock short of tWR + tRP (as upstream); a cache line's last words can get the next request's line address if
+   the core asks again one clk1x after ready (as upstream); the SPU reverb address RAM (`irvAddr`, falling-edge
+   M10K) feeds three adders in half a clk1x and can still fail on some seeds.
 
 ## Layout
 
@@ -103,10 +110,10 @@ Silicon); one full build takes about 35 minutes and ~2 GB of Docker memory.
     tools/build.sh NAME              # full build -> builds/NAME/pocket/src/fpga/output_files/ap_core.rbf_r
     ELAB=1 tools/build.sh NAME       # HDL check only (~1 minute)
     MAPONLY=1 tools/build.sh NAME    # synthesis only (resource estimate)
-    SEED=7 tools/build.sh NAME       # fitter seed (pk20 = seed 7)
+    SEED=4 tools/build.sh NAME       # fitter seed (the tested build sdB = seed 4; pk20 was seed 7)
 
 The chip is about 99 % full: depending on the fitter seed, a build may not fit or may miss timing by a fraction of a
-nanosecond. `tools/seeds.sh NAME` tries seeds until one fits and meets timing at all four corners (two chains with
+nanosecond (with the SDRAM change most seeds pass). `tools/seeds.sh NAME` tries seeds until one fits and meets timing at all four corners (two chains with
 different `SEEDS="..."` can run side by side). Then:
 
     tools/report.sh NAME                          # resources, slack per clock and corner, biggest modules
@@ -161,3 +168,10 @@ Each `run.sh` has its usage on the first lines. `sim/`: equivalence of the trimm
 multiplier, DMA, GPU dividers and VRAM, GTE, MDEC stub, memory card 2 removal, RAM primitives, reset-only save
 states, SPU). `pocket/sim/`: the Pocket wrapper (PSRAM controller with a PSRAM model, CD reader, memory card,
 video, diagnostics page) and a full BIOS boot of the whole core.
+
+`sim/sdram` tests the SDRAM controller (`rtl/sdram.sv`, SystemVerilog) with [Verilator](https://verilator.org) 5 in
+Docker (the `mirlo-dev` image, or `VERILATOR_IMAGE`): it and a reference controller each get a behavioural SDRAM
+chip that checks command timing and the same random CPU / cache / DMA / SPU / DMA-fifo traffic; every read is
+checked, and with `LOCKSTEP` both must drive the same outputs on every clock:
+
+    sh sim/sdram/run.sh 20000 1 2        # 20 ms, seed 1, at least 2 clk1x between CPU requests

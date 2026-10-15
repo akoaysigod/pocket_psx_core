@@ -118,6 +118,11 @@ wire [2:0] CMD_AUTO_REFRESH    = 3'b001;
 wire [2:0] CMD_LOAD_MODE       = 3'b000;
 
 reg [13:0] refresh_count = startup_refresh_max - sdram_startup_cycles;
+// Pocket timing: refresh_due = (refresh_count > cycles_per_refresh), registered: it is computed from the value
+// refresh_count gets (rc_next) instead of from refresh_count, so the command / address logic does not wait for the
+// 14-bit compare
+reg [13:0] rc_next;
+reg        refresh_due = (startup_refresh_max - sdram_startup_cycles) > cycles_per_refresh;
 reg  [2:0] command;
 reg        chip;
 
@@ -225,6 +230,10 @@ reg  [3:0] state = STATE_STARTUP;
 reg ch1_rq, ch2_rq, ch3_rq, refreshForce_req;
 reg saved_wr;
 reg saved_128read = 0;
+// Pocket fix: RW2 adds the next DMA fifo word to the open row only after a DMA fifo write. ch2 (CPU) writes
+// also end in RW2 with ch = 1, and lastbank is the row of the last fifo write then, not the open row: a fifo
+// word arriving during a CPU write to another row was written into the CPU's row (found by sim/sdram).
+reg saved_fifo = 0;
 reg ap_wait = 0;   // 128-bit read ended with READ + auto precharge: one more idle clock before the next command
 
 reg [CAS_LATENCY+BURST_LENGTH:0] data_ready_delay1, data_ready_delay2, data_ready_delay3;
@@ -264,7 +273,7 @@ always @(posedge clk) begin
 	refreshForce_1 <= refreshForce;
 	refreshForce_req <= refreshForce_req | (refreshForce & ~refreshForce_1);
 
-	refresh_count <= refresh_count+1'b1;
+	rc_next = refresh_count + 1'b1;
 
 	data_ready_delay1 <= data_ready_delay1>>1;
 	data_ready_delay2 <= data_ready_delay2>>1;
@@ -343,7 +352,7 @@ always @(posedge clk) begin
    
             if (!refresh_count) begin
                state   <= STATE_IDLE;
-               refresh_count <= 0;
+               rc_next = 0;
             end
          end
    
@@ -407,7 +416,7 @@ always @(posedge clk) begin
          STATE_IDLE_1: begin
             state      <= STATE_IDLE;
             // mask possible refresh to reduce colliding.
-            if (refresh_count > cycles_per_refresh) begin
+            if (refresh_due) begin
                //------------------------------------------------------------------------
                //-- Start the refresh cycle. 
                //-- This tasks tRFC (66ns), so 7 idle cycles are needed @ 120MHz
@@ -415,7 +424,7 @@ always @(posedge clk) begin
                state    <= STATE_RFSH;
                command  <= CMD_AUTO_REFRESH;
                chip     <= 0;
-               refresh_count <= refresh_count - cycles_per_refresh + 1'd1;
+               rc_next = refresh_count - cycles_per_refresh + 1'd1;
             end
          end
    
@@ -431,15 +440,22 @@ always @(posedge clk) begin
    
          STATE_IDLE: begin
             saved_128read <= 0;
-            if (refreshForce_req || refresh_count > cycles_per_refresh) begin
+            // Pocket timing: the I/O registers (SDRAM_A, SDRAM_BA, command, chip) for a ch3 start are set here
+            // without looking at ch1 / ch2; a ch1 / ch2 start overrides them after the case (see there)
+            if (!(refreshForce_req || refresh_due) && dmafifo_empty && ch3_rq) begin
+               {SDRAM_BA,SDRAM_A} <= ch3buf_addr[24:10];
+               chip               <= ch3buf_addr[26];
+               command            <= CMD_ACTIVE;
+            end
+            if (refreshForce_req || refresh_due) begin
                state            <= STATE_RFSH;
                command          <= CMD_AUTO_REFRESH;
                chip             <= 0;
                refreshForce_req <= 0;
-               if (refresh_count > cycles_per_refresh)
-                  refresh_count <= refresh_count - cycles_per_refresh + 1'd1;
+               if (refresh_due)
+                  rc_next = refresh_count - cycles_per_refresh + 1'd1;
                else
-                  refresh_count <= 14'd0;
+                  rc_next = 14'd0;
                
             end else if(~dmafifo_empty) begin
                {cas_addr[12:9],SDRAM_BA,SDRAM_A,cas_addr[8:0]} <= {2'b00, 1'b0, dmafifo_adr[25:1]};
@@ -452,16 +468,17 @@ always @(posedge clk) begin
                state        <= STATE_WAIT;
                dmafifo_read <= 1'b1;
                lastbank     <= dmafifo_adr[20:10];
+               saved_fifo   <= 1'b1;
             end else if(ch1_req | ch1_rq) begin
                // A10 = auto precharge, except for 128-bit reads (cache line / DMA): their four READs go to the
                // same open row, so only the last one may close it (READ to a bank in auto precharge is illegal)
-               {cas_addr[12:9],SDRAM_BA,SDRAM_A,cas_addr[8:0]} <= {2'b00, ~(ch1_dma | ch1_cache), ch1_addr[25:1]};
-               chip         <= ch1_addr[26];
+               // SDRAM_BA / SDRAM_A = ch1_addr[24:10], chip, command: set after the case
+               {cas_addr[12:9],cas_addr[8:0]} <= {2'b00, ~(ch1_dma | ch1_cache), ch1_addr[25], ch1_addr[9:1]};
                saved_data   <= ch1_din;
                saved_wr     <= ~ch1_rnw;
                ch           <= 0;
                ch1_rq       <= 0;
-               command      <= CMD_ACTIVE;
+               saved_fifo   <= 1'b0;
                state        <= STATE_WAIT;
 
                cache_buffer <= ch1_cache;
@@ -478,25 +495,25 @@ always @(posedge clk) begin
                saved_128read <= ch1_dma | ch1_cache;
                
             end else if(ch2_req | ch2_rq) begin
-               {cas_addr[12:9],SDRAM_BA,SDRAM_A,cas_addr[8:0]} <= {~ch2_be[1:0], ch2_rnw, ch2_addr[25:1]};
-               chip       <= ch2_addr[26];
+               // SDRAM_BA / SDRAM_A = ch2_addr[24:10], chip, command: set after the case
+               {cas_addr[12:9],cas_addr[8:0]} <= {~ch2_be[1:0], ch2_rnw, ch2_addr[25], ch2_addr[9:1]};
                saved_data <= ch2_din;
                saved_wr   <= ~ch2_rnw;
                saved_be   <= ch2_be;
                ch         <= 1;
                ch2_rq     <= 0;
-               command    <= CMD_ACTIVE;
+               saved_fifo <= 1'b0;
                state      <= STATE_WAIT;
                ch2_ready_ramclock <= 1;
             end else if(ch3_rq) begin
-               {cas_addr[12:9],SDRAM_BA,SDRAM_A,cas_addr[8:0]} <= {~ch3buf_be[1:0], ch3buf_rnw, ch3buf_addr[25:1]};
-               chip       <= ch3buf_addr[26];
+               // SDRAM_BA / SDRAM_A, chip, command: set at the top of STATE_IDLE
+               {cas_addr[12:9],cas_addr[8:0]} <= {~ch3buf_be[1:0], ch3buf_rnw, ch3buf_addr[25], ch3buf_addr[9:1]};
                saved_data <= ch3buf_din;
                saved_wr   <= ~ch3buf_rnw;
                saved_be   <= ch3buf_be;
                ch         <= 2;
                ch3_rq     <= 0;
-               command    <= CMD_ACTIVE;
+               saved_fifo <= 1'b0;
                state      <= STATE_WAIT;
             end
          end
@@ -530,7 +547,7 @@ always @(posedge clk) begin
                command              <= CMD_WRITE;
                SDRAM_DQ             <= saved_data[31:16];
                SDRAM_A[12:11]       <= ~saved_be[3:2];
-               if(~dmafifo_empty && (lastbank == dmafifo_adr[20:10])) begin
+               if(saved_fifo && ~dmafifo_empty && (lastbank == dmafifo_adr[20:10])) begin
                   cas_addr[8:0]     <= dmafifo_adr[9:1];
                   saved_data        <= dmafifo_data;
                   state             <= STATE_RW1;
@@ -551,10 +568,21 @@ always @(posedge clk) begin
             end
          end
       endcase
+
+      // Pocket timing: ch1_req / ch2_req (and ch1_addr / ch2_addr) come from the clk1x domain late in the clk3x
+      // clock after a clk1x edge. They go into the I/O registers of the ACTIVE command (SDRAM_A, SDRAM_BA, command,
+      // chip) through this last multiplexer only; everything else for these registers is decided above without
+      // them. Same result as when the ch1 / ch2 branches of STATE_IDLE set them (they win over ch3 there).
+      if (state == STATE_IDLE && !(refreshForce_req || refresh_due) && dmafifo_empty &&
+          (ch1_req | ch1_rq | ch2_req | ch2_rq)) begin
+         {SDRAM_BA,SDRAM_A} <= (ch1_req | ch1_rq) ? ch1_addr[24:10] : ch2_addr[24:10];
+         chip               <= (ch1_req | ch1_rq) ? ch1_addr[26] : ch2_addr[26];
+         command            <= CMD_ACTIVE;
+      end
    
       if (init) begin
          state <= STATE_STARTUP;
-         refresh_count <= startup_refresh_max - sdram_startup_cycles;
+         rc_next = startup_refresh_max - sdram_startup_cycles;
       end
    end
 	else begin
@@ -563,6 +591,9 @@ always @(posedge clk) begin
 		command <= 'Z;
 		chip <= 'Z;
 	end   
+
+   refresh_count <= rc_next;
+   refresh_due   <= rc_next > cycles_per_refresh;
 end
 
 altddio_out
