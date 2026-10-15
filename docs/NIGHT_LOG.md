@@ -632,3 +632,26 @@ clk2x -0.47 (85C) / -0.98 (0C): still only the GPU VRAM wrap-length path (gpu.vh
   s3 -0.013 (fast-0C hold only); setup >= 0.07 everywhere, the spu irvAddr half-cycle path did not show up. (pk20
   controller: 1 clean seed of 8.) sdB_s4: 18,223 ALMs, 1,847 LABs, 251 M10K, 0 critical warnings, RamM10Kn inputs
   from clk1x only (+1.478). -> releases/PSXPort.PSX_0.1.0_sdB_s4.zip, for the hardware test.
+
+## 2026-10-15: roadmap item 1, L2 / R2 on the handheld (worktree ../sotn-controls, branch controls, from main f3c21e6)
+- Core Settings (interact.json): "R2 button" @ 0x80000000 and "L2 button" @ 0x80000004, list, persist, writeonly,
+  default 0: 0 dock only, 1 Select + R1 / L1, 2 L1 + R1. pocket_psx latches the value on clk_74a (low bits, also the
+  top byte in case it arrives byte-swapped; 0 until APF writes = the default), two-register sync to clk1x.
+- New pocket/src/fpga/core/pocket_buttons.vhd between the synced keys and the core (one clock of latency):
+  stage A Select modifier (Select held back while a Select-picker is chosen; Select + R1 / L1 gives R2 / L2 until
+  R1 / L1 is released, also if Select is let go first; Select sent as a 100 ms tap when released without a combo),
+  stage B L1 + R1 on stage A's output (first press opens a 50 ms window; the other inside it = combo, L1 / R1 off
+  until both released; window over = pass; released inside = replayed as a 50 ms press). Next state first, keys
+  from it: a key that becomes a combo never shows for a clock. Dock L2 / R2 OR'ed in.
+- Room: GTE itrram RamMLAB -> RamM10Kn (the cd-audio change, verified there: cdEs6 timing clean, m10kn_clocks
+  clk1x / clk2x only). Quartus analysis & elaboration: 0 errors.
+- New test pocket/sim/pocket_buttons: pickers 0/0 with 20,000 clocks of random keys (output = input one clock
+  later, every clock); 89 checks over Select tap, Select + R1 (both release orders), R1 before Select, Select + L1
+  with only R2 on Select, dock R2, Select + L1 -> L2, L1 tap replay, L1 hold, L1 then R1 inside / outside the
+  window, same-clock press, both pickers on L1 + R1, a picker changed mid-combo (both modes), Select + R1 and
+  L1 + R1 at once. PASS. Mutations caught: R1 not suppressed (7 errors), combo ended by Select release (3),
+  Select not held back (9), keys from the old state (one-clock R1 leak, 3), window 1 ms (18).
+- sim/gte_small seed 1 x 20,000 PASS. Seeds: ctls4 hold -0.575 (clk2x -> clk1x savestates SS_SPURAM_Adr ->
+  spu ram_Adr, upstream reset-sequence path, placement dependent; not the new logic), ctls1 clean: 18,158 ALMs,
+  1,846 LABs, 254 M10K, 55 DSP, 0 critical warnings, setup >= 0.15 everywhere, worst hold +0.014 (fast 0C clk1x);
+  m10kn_clocks only clk1x / clk2x. -> releases/PSXPort.PSX_0.1.0_ctls1.zip (bitstream and JSONs checked).

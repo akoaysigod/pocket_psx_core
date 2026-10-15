@@ -1,7 +1,38 @@
 {
     "interact": {
         "magic": "APF_VER_1",
-        "variables": [],
+        "variables": [
+            {
+                "name": "R2 button",
+                "id": 1,
+                "type": "list",
+                "enabled": true,
+                "persist": true,
+                "writeonly": true,
+                "address": "0x80000000",
+                "defaultval": 0,
+                "options": [
+                    { "value": 0, "name": "Dock R2 only" },
+                    { "value": 1, "name": "Select + R1" },
+                    { "value": 2, "name": "L1 + R1" }
+                ]
+            },
+            {
+                "name": "L2 button",
+                "id": 2,
+                "type": "list",
+                "enabled": true,
+                "persist": true,
+                "writeonly": true,
+                "address": "0x80000004",
+                "defaultval": 0,
+                "options": [
+                    { "value": 0, "name": "Dock L2 only" },
+                    { "value": 1, "name": "Select + L1" },
+                    { "value": 2, "name": "L1 + R1" }
+                ]
+            }
+        ],
         "messages": []
     }
 }
