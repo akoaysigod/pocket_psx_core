@@ -2,8 +2,8 @@
 
 A PlayStation core for the Analogue Pocket, made by trimming the MiSTer PSX core until it fits the Pocket's FPGA
 (Cyclone V 5CEBA4F23C8: 18,480 ALMs, 308 M10K, 66 DSP), with a Pocket wrapper for SDRAM, PSRAM, video, audio,
-controller, CD images from the SD card and memory card saves. The trims were chosen for Symphony of the Night
-(USA, SLUS-00067); other games may use features that were removed.
+controller, CD images from the SD card and memory card saves. The trims were chosen with Symphony of the Night
+(USA, SLUS-00067) as the test game; other games may use features that were removed.
 
 Based on [MiSTer-devel/PSX_MiSTer](https://github.com/MiSTer-devel/PSX_MiSTer) at commit `cd17b5a`
 (2026-08-21), GPL-2.0 (see `LICENSE`). Upstream originals of the files the equivalence tests compare against are
@@ -26,7 +26,7 @@ This was 99.99% vibe coded by Opus 5.5 over the course of 3 days or so on the pr
 - Not included and not redistributable: the BIOS (Sony), game images, and Intel's `altera_mf` simulation library
   (`sim/altera_lib`).
 
-## Status (version 0.1.2, build cc seed 1, 2026-10-15)
+## Status (version 0.1.3, same core as 0.1.2: build cc seed 1, 2026-10-15)
 
 Tested on hardware: the game runs at full speed (60 fps), the opening movies (FMVs) play, memory card saves work
 (saved per game by the Pocket, quit the core to write the file), L2 / R2 come from button combos on the handheld
@@ -63,7 +63,7 @@ Pocket off before switching to another core.
      combos (item 1) as well it still fits: build cc seed 1, 18,215 ALMs, 1,847 of 1,848 LABs, timing met at all
      corners (seed 6 too).
    - Audio CDs: data slot 15 ("Track 1 (audio CD)") instead of 16 marks track 1 as audio, so the BIOS sees an audio
-     CD and shows its CD player. The entry "CD player test (SotN track 2 as an audio CD)" plays SotN's track 2 that
+     CD and shows its CD player. The example entry `pocket/examples/CD player test (SotN track 2 as an audio CD).json` plays SotN's track 2 that
      way.
    - Tests: `sim/cd_cdda` (our `cd_top` against upstream's while playing track 2: identical on every clock, the
      samples come out in order), `pocket/sim/pocket_cd` layout 3 (audio CD), `sim/gte_small`.
@@ -116,27 +116,40 @@ different `SEEDS="..."` can run side by side). Then:
     tools/release.sh            # newest build -> releases/PSXPort.PSX_<version>_<build>.zip
 
 The zip has the full layout the Pocket expects, with every file except the copyrighted ones. Unzip it at the SD card's
-root, then put your own files in the two empty folders:
+root, then add your BIOS and games (see "Adding a game" below):
 
     Cores/PSXPort.PSX/                         bitstream.rbf_r, JSON files, LICENSE.txt
     Platforms/psx.json
     Assets/psx/common/                         <- your BIOS, named scph1001.bin (512 KB)
     Assets/psx/PSXPort.PSX/BIOS (no disc).json      boots the BIOS menu without a disc
-    Assets/psx/PSXPort.PSX/Castlevania - Symphony of the Night.json
-    Assets/psx/PSXPort.PSX/CD player test (SotN track 2 as an audio CD).json
-                                               the BIOS CD player with SotN's track 2 as an audio CD
-    Assets/psx/PSXPort.PSX/Castlevania - Symphony of the Night/
-                                               <- Castlevania - Symphony of the Night (Track 1).bin and (Track 2).bin
+    Assets/psx/PSXPort.PSX/<Game>.json         <- one entry per game (see below)
+    Assets/psx/PSXPort.PSX/<Game>/             <- that game's .bin files
 
-The game entry expects the track files named exactly like that (Redump names with "(USA)" must be renamed, or make a
-new entry from the `.cue` with `pocket/tools/cue2instance.py`). The zip can be shared (with the source, GPL).
+The zip can be shared (with the source, GPL). `Example.json` and `Example/README.txt` in the zip repeat the steps below.
+
+### Adding a game
+
+Games are one `.bin` per track (Redump style) plus the `.cue`. Keep them in `games/<Game>/` (git-ignored), then
+either build a card with the game in it:
+
+    tools/release.sh --bios SCPH1001.BIN --game "games/<Game>/<Game>.cue" --copy-bins
+
+or make the entry by hand: `python3 pocket/tools/cue2instance.py "games/<Game>/<Game>.cue" "<Game>.json"` writes the
+instance JSON (track 1 = data slot 16, track 2 = slot 17, ...); copy it to `Assets/psx/PSXPort.PSX/` and the `.bin`
+files to `Assets/psx/PSXPort.PSX/<folder named in data_path>/`.
+
+Worked example, Symphony of the Night (`games/Castlevania - Symphony of the Night/`, two tracks):
+`pocket/examples/Castlevania - Symphony of the Night.json` is what `cue2instance.py` writes for it, and
+`pocket/examples/CD player test (SotN track 2 as an audio CD).json` shows the audio CD trick (data slot 15 instead
+of 16 marks track 1 as audio, so the BIOS opens its CD player). Redump names with "(USA)" must be renamed to match
+the `.json`, or generate the entry from the `.cue`.
 
 Other forms:
 
     tools/release.sh NAME                       # a given build in builds/
     tools/release.sh path/to/bitstream.rbf_r    # a given bitstream file
     tools/release.sh NAME --bios SCPH1001.BIN \
-        --game "Castlevania - Symphony of the Night/Castlevania - Symphony of the Night.cue" --copy-bins
+        --game "games/<Game>/<Game>.cue" --copy-bins
                                                 # with your BIOS and game in it: ..._personal.zip, don't share it
     python3 pocket/tools/package.py --rbf BITSTREAM.rbf_r --out SDROOT [--bios ...] [--game ... --copy-bins]
                                                 # the same layout as a folder
@@ -144,7 +157,7 @@ Other forms:
 To update only the core on a card that already has everything, copying `bitstream.rbf_r` to `Cores/PSXPort.PSX/` is
 enough.
 
-The BIOS (`SCPH1001.BIN`) and the game files are not part of this repository (`.gitignore`); bring your own.
+The BIOS (`SCPH1001.BIN`) and the game files (`games/`) are not part of this repository (`.gitignore`); bring your own.
 
 ## Tests
 
