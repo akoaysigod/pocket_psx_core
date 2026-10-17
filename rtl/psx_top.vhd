@@ -214,6 +214,8 @@ entity psx_top is
       -- sound                            
       sound_out_left        : out std_logic_vector(15 downto 0) := (others => '0');
       sound_out_right       : out std_logic_vector(15 downto 0) := (others => '0');
+      sound_tick            : out std_logic := '0';   -- SPU sample tick (44.1 kHz)
+      sound_valid           : out std_logic := '0';   -- SPU: sound_out holds a newly finished sample (late if the SPU is)
       -- Pocket bring-up: PC, SR, last exception EPC/CAUSE, counts, POST code, last I/O address (see end of file)
       debug_out             : out std_logic_vector(255 downto 0) := (others => '0');
        -- savestates
@@ -1675,6 +1677,7 @@ begin
       
       sound_out_left       => sound_out_left, 
       sound_out_right      => sound_out_right,
+      sound_valid          => sound_valid,
       
       bus_addr             => bus_spu_addr,     
       bus_dataWrite        => bus_spu_dataWrite,
@@ -2349,6 +2352,8 @@ begin
       debug_out(223 downto 0) <= (others => '0');
    end generate;
    debug_out(255 downto 224) <= std_logic_vector(dbg_pc);                                        -- CPU PC
+
+   sound_tick <= spu_tick;
 
 end architecture;
 
