@@ -35,11 +35,12 @@ Then copy the contents of `SDROOT` to the SD card's root. That gives:
     Cores/akoaysigod.PSX/                     bitstream.rbf_r + json files
     Platforms/psx.json
     Assets/psx/common/scph1001.bin
+    Assets/psx/common/<game folder>/             (the .bin files)
     Assets/psx/akoaysigod.PSX/Game.json          (instance JSON: what you select in the Pocket menu)
-    Assets/psx/akoaysigod.PSX/<game folder>/     (the .bin files)
 
 Games must be one `.bin` per track (Redump style). `tools/cue2instance.py GAME.cue` makes the instance JSON on
-its own. The memory card is saved per game by the Pocket (128 KB raw card, same format as MiSTer's `.sav`).
+its own; Pocket Sync and Pupdate make it from `Cores/akoaysigod.PSX/instance-packager.json` for every game folder in
+`Assets/psx/common/` (see `Assets/psx/common/HOW_TO_ADD_GAMES.txt`). The memory card is saved per game by the Pocket (128 KB raw card, same format as MiSTer's `.sav`).
 
 ## What to look for when testing
 

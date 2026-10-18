@@ -1,0 +1,28 @@
+{
+    "output": "Assets/psx/akoaysigod.PSX",
+    "platform_id": "psx",
+    "slot_limit": {
+        "count": 24,
+        "message": "Games with more than 24 tracks are not supported by this core."
+    },
+    "data_slots": [
+        {
+            "id": 16,
+            "filename": "*.bin",
+            "sort": "ascending",
+            "required": true
+        }
+    ],
+    "overrides": {
+        "common": {
+            "data_slots": [
+                {
+                    "id": 16,
+                    "filename": "no game in this folder",
+                    "sort": "single",
+                    "required": true
+                }
+            ]
+        }
+    }
+}

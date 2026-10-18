@@ -7,7 +7,7 @@ other tracks AUDIO with their 2 second pregap inside the file (INDEX 00 00:00:00
 
 usage: cue2instance.py GAME.cue [OUT.json]
 Copy OUT.json (default: GAME.json next to the cue) to /Assets/psx/akoaysigod.PSX/ on the SD card, and the .bin
-files to /Assets/psx/akoaysigod.PSX/<folder of the cue>/.
+files to /Assets/psx/common/<folder of the cue>/.
 """
 import json
 import os

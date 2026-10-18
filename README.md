@@ -95,22 +95,35 @@ root, then add your BIOS and games (see "Adding a game" below):
     Cores/akoaysigod.PSX/                         bitstream.rbf_r, JSON files, LICENSE.txt
     Platforms/psx.json
     Assets/psx/common/                            <- your BIOS, named scph1001.bin (512 KB)
+    Assets/psx/common/HOW_TO_ADD_GAMES.txt        the steps below, for players
+    Assets/psx/common/<Game>/                     <- each game's .bin files
     Assets/psx/akoaysigod.PSX/BIOS (no disc).json    boots the BIOS menu without a disc
     Assets/psx/akoaysigod.PSX/<Game>.json         <- one entry per game (see below)
-    Assets/psx/akoaysigod.PSX/<Game>/             <- that game's .bin files
 
-The zip can be shared (with the source, GPL). `Example.json` and `Example/README.txt` in the zip repeat the steps below.
+The zip can be shared (with the source, GPL). `HOW_TO_ADD_GAMES.txt` in the zip repeats the steps below for players.
 
 ### Adding a game
 
-Games are one `.bin` per track (Redump style) plus the `.cue`. Keep them in `games/<Game>/` (git-ignored), then
-either build a card with the game in it:
+Games are one `.bin` per track (Redump style) plus the `.cue`. The track data slots (15 to 39) are platform-common
+(`"parameters": "0x0"` in `data.json`), so the Pocket looks for the `.bin` files in `Assets/psx/common/<data_path>`,
+never in `Assets/psx/akoaysigod.PSX/`. Up to 0.1.4 they were core-specific: on an older card, move the game folders
+from `Assets/psx/akoaysigod.PSX/` to `Assets/psx/common/` (the `.json` files and saves stay where they are).
+
+With an updater: put each game's folder in `Assets/psx/common/<Game>/` on the card, then click "Instance JSONs" in
+Pocket Sync's Games view or run Pupdate's instance JSON generator. It writes `Assets/psx/akoaysigod.PSX/<Game>.json`
+from `Cores/akoaysigod.PSX/instance-packager.json` (every `.bin` in the folder in name order, from data slot 16). A
+dump with one merged `.bin` for several tracks doesn't work with the core at all (the updaters don't read the `.cue`
+and give it a one-track entry). One folder per disc: a multi-disc game gets one entry per disc, the core can't swap
+discs, and the Pocket keeps a separate memory card per entry. The entry is named after the folder, and so is its
+save: renaming the folder starts with an empty memory card.
+
+Without one: keep the games in `games/<Game>/` (git-ignored), then either build a card with the game in it:
 
     tools/release.sh --bios SCPH1001.BIN --game "games/<Game>/<Game>.cue" --copy-bins
 
 or make the entry by hand: `python3 pocket/tools/cue2instance.py "games/<Game>/<Game>.cue" "<Game>.json"` writes the
 instance JSON (track 1 = data slot 16, track 2 = slot 17, ...); copy it to `Assets/psx/akoaysigod.PSX/` and the `.bin`
-files to `Assets/psx/akoaysigod.PSX/<folder named in data_path>/`.
+files to `Assets/psx/common/<folder named in data_path>/`.
 
 Worked example, Symphony of the Night (`games/Castlevania - Symphony of the Night/`, two tracks):
 `pocket/examples/Castlevania - Symphony of the Night.json` is what `cue2instance.py` writes for it, and

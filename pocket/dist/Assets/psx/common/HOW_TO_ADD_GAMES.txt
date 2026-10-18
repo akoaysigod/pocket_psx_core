@@ -1,0 +1,73 @@
+HOW TO ADD GAMES (PlayStation core, akoaysigod.PSX)
+==================================================
+
+Each game needs two things on the SD card:
+
+  1. Its folder of .bin files, in this folder:   Assets/psx/common/MyGame/
+  2. Its entry, the game you pick in the menu:    Assets/psx/akoaysigod.PSX/MyGame.json
+
+Games must be Redump style: one .bin file per track. A .cue file can sit next to them;
+it's not used.
+
+The BIOS goes in this folder too, named scph1001.bin (512 KB, not included).
+
+
+Easy way: Pocket Sync or Pupdate
+--------------------------------
+These SD card updaters write the .json files for you.
+
+  1. Copy each game's folder into this folder, for example:
+
+       Assets/psx/common/MyGame/MyGame (Track 1).bin
+       Assets/psx/common/MyGame/MyGame (Track 2).bin
+
+  2. Pocket Sync: open the SD card, go to Games and click "Instance JSONs".
+     Pupdate: choose its option to build instance JSON files.
+
+  3. MyGame.json appears in Assets/psx/akoaysigod.PSX/. Pick "MyGame" in the core's menu.
+
+Run it again whenever you add games.
+
+
+By hand
+-------
+  1. Copy the game's folder into this folder, as in step 1 above.
+
+  2. Make a text file Assets/psx/akoaysigod.PSX/MyGame.json:
+
+       {
+           "instance": {
+               "magic": "APF_VER_1",
+               "data_path": "MyGame/",
+               "data_slots": [
+                   { "id": 16, "filename": "MyGame (Track 1).bin" },
+                   { "id": 17, "filename": "MyGame (Track 2).bin" }
+               ]
+           }
+       }
+
+     - "data_path": the game's folder name here in Assets/psx/common/, ending with a /.
+     - One line in "data_slots" per track, in track order: track 1 is id 16, track 2 is
+       id 17, track 3 is id 18, ... up to 24 tracks (id 39).
+     - "filename": exactly as the .bin file is named.
+     - Every line in the list except the last ends with a comma.
+
+  3. Pick "MyGame" in the core's menu.
+
+
+Notes
+-----
+  - The .json's name is the name in the menu and the name of its memory card file
+    (Saves/psx/akoaysigod.PSX/MyGame.sav). Renaming the .json, or the folder when an updater
+    makes the .json, starts the game with an empty memory card.
+  - Put the .bin files only in Assets/psx/common/<game folder>/. The core doesn't look for
+    them in Assets/psx/akoaysigod.PSX/.
+  - Coming from version 0.1.4 or older: move your game folders from Assets/psx/akoaysigod.PSX/
+    to this folder. The .json files and memory cards stay where they are.
+  - A single .bin is fine for a game with one track. A dump with one .bin holding several
+    tracks (several TRACK lines in its .cue) doesn't work: it needs one .bin per track.
+  - Multi-disc games: one folder per disc. Each disc is its own entry with its own memory
+    card; the core can't swap discs.
+  - Games with more than 24 tracks aren't supported.
+  - Audio CD (opens the BIOS CD player): use id 15 instead of 16 for track 1.
+  - "BIOS (no disc)" in the menu boots the BIOS menu without a game.
