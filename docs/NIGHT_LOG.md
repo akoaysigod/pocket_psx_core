@@ -716,3 +716,24 @@ clk2x -0.47 (85C) / -0.98 (0C): still only the GPU VRAM wrap-length path (gpu.vh
   Pocket's core folder is author.shortname, so pocket/dist/Cores and Assets/psx folders PSXPort.PSX -> akoaysigod.PSX,
   package.py / release.sh / cue2instance.py / READMEs / info.txt / Example README updated; zips are now named
   akoaysigod.PSX_<version>_<build>.zip. package.py into a scratch folder: new layout, nothing else changed.
+
+## 2026-10-17/18: bar on the right edge when docked (worktree sotn-gpu, branch sotn-gpu from main 0.1.4)
+- Test build with hCrop on (black past the mode's width), hcrops8 (seeds 1-7 did not fit: 1,849-1,856 LABs):
+  hardware: bar still there. A photo of the TV shows it is about one game pixel wide, at the picture's last column,
+  in colours unrelated to the picture.
+- Cause, pocket_video: the core raises hblank one clkvid clock after a line's last pixel; clkpix (clkvid / 2)
+  samples every other clkvid clock, and a line is 3413 clkvid clocks (odd), so on every other line clkpix saw
+  the last pixel's toggle only together with DE low and dropped it. Lines reached the scaler one pixel short on
+  every other line, in every mode. hCrop changed nothing because no line was ever longer than the mode's width.
+- Fix: DE falls one clkvid clock later (v_de = blank-free now or one clock ago); the extra clkpix with DE high
+  has skip set. hCrop back to '0'.
+- New test pocket/sim/video_chain: rtl/gpu_videoout_async into pocket_video, pixels per line on clkpix, 5 modes
+  x 3 display-range starts (x1 608 / 611 / 615, 2560 wide), 40 lines each. Before: every case FAIL, half the
+  lines width - 1 (hCrop on or off). After: 15 / 15 PASS, every line exactly 256 / 320 / 368 / 512 / 640.
+- pocket/sim/pocket_video: its source now ends a line like the core (hblank one clkvid clock after the last
+  pixel; it used to be a whole pixel later, which hid the bug). Old pocket_video: FAIL (lines of 255);
+  new: PASS (10 frames, 220 lines, 0 errors); mutation 1 (slot word) still caught (176 errors).
+- Fit vdes1 (seed 1): 18,257 ALMs, 1,848 LABs, 254 M10K, 55 DSP, 0 critical warnings, worst setup +0.014
+  (slow 0C clk2x), worst hold +0.038 (fast 0C clk1x), video clocks hold >= +0.163; m10kn_clocks as in cc_s1
+  (clk1x / clk2x only). -> releases/akoaysigod.PSX_0.1.4_vdes1.zip, for the hardware test.
+- GPU area study in docs/gpu_space.md (no change adopted).

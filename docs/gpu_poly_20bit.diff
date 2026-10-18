@@ -1,0 +1,266 @@
+--- a/rtl/gpu_poly.vhd	2026-10-17 10:25:38
++++ b/rtl/gpu_poly.vhd	2026-10-17 10:25:38
+@@ -127,10 +127,10 @@
+    signal lineStep            : integer range 0 to 7 := 7;   -- 7 = values ready
+    signal lineX               : signed(11 downto 0) := (others => '0');
+    signal lineY               : signed(12 downto 0) := (others => '0');
+-   signal lpDx, lpDy          : signed(31 downto 0) := (others => '0');   -- stage 1: operands
++   signal lpDx, lpDy          : signed(19 downto 0) := (others => '0');   -- stage 1: operands
+    signal lpCh1, lpCh2        : integer range 0 to 4 := 0;
+    signal lpV1, lpV2          : std_logic := '0';
+-   signal lpX, lpY            : signed(45 downto 0) := (others => '0');   -- stage 2: products
++   signal lpX, lpY            : signed(33 downto 0) := (others => '0');   -- stage 2: products
+    -- Pocket: only dividers 1-3 exist; gradients needing more divisions run in a second round,
+    -- with the extra dividends (difference part, low 12 bits are zero) held here meanwhile
+    type tdivStash is array(0 to 2) of signed(32 downto 0);
+@@ -199,22 +199,27 @@
+    signal diffV10             : signed(8 downto 0);
+    signal diffV21             : signed(8 downto 0);
+ 
+-   signal dxR                 : unsigned(31 downto 0) := (others => '0'); 
+-   signal dyR                 : unsigned(31 downto 0) := (others => '0'); 
+-   signal dxG                 : unsigned(31 downto 0) := (others => '0'); 
+-   signal dyG                 : unsigned(31 downto 0) := (others => '0');
+-   signal dxB                 : unsigned(31 downto 0) := (others => '0'); 
+-   signal dyB                 : unsigned(31 downto 0) := (others => '0');
+-   signal dxU                 : unsigned(31 downto 0) := (others => '0'); 
+-   signal dyU                 : unsigned(31 downto 0) := (others => '0');
+-   signal dxV                 : unsigned(31 downto 0) := (others => '0'); 
+-   signal dyV                 : unsigned(31 downto 0) := (others => '0');
++   -- Pocket: the R, G, B, U, V interpolators are 20 bits wide instead of 32. Only bits 19..4 of work_* are ever
++   -- used, and every value on the way there (gradients, bases, line start values, per-pixel sums) is built
++   -- only with + and *, whose low 20 bits depend only on the low 20 bits of the operands. So the low 20 bits,
++   -- and with them every pixel, are the same as with 32 bits. (The divider still divides at full width; only
++   -- the low 20 bits of its quotient are kept.)
++   signal dxR                 : unsigned(19 downto 0) := (others => '0'); 
++   signal dyR                 : unsigned(19 downto 0) := (others => '0'); 
++   signal dxG                 : unsigned(19 downto 0) := (others => '0'); 
++   signal dyG                 : unsigned(19 downto 0) := (others => '0');
++   signal dxB                 : unsigned(19 downto 0) := (others => '0'); 
++   signal dyB                 : unsigned(19 downto 0) := (others => '0');
++   signal dxU                 : unsigned(19 downto 0) := (others => '0'); 
++   signal dyU                 : unsigned(19 downto 0) := (others => '0');
++   signal dxV                 : unsigned(19 downto 0) := (others => '0'); 
++   signal dyV                 : unsigned(19 downto 0) := (others => '0');
+ 
+-   signal base_R              : unsigned(31 downto 0) := (others => '0');   
+-   signal base_G              : unsigned(31 downto 0) := (others => '0');   
+-   signal base_B              : unsigned(31 downto 0) := (others => '0');   
+-   signal base_U              : unsigned(31 downto 0) := (others => '0');   
+-   signal base_V              : unsigned(31 downto 0) := (others => '0'); 
++   signal base_R              : unsigned(19 downto 0) := (others => '0');   
++   signal base_G              : unsigned(19 downto 0) := (others => '0');   
++   signal base_B              : unsigned(19 downto 0) := (others => '0');   
++   signal base_U              : unsigned(19 downto 0) := (others => '0');   
++   signal base_V              : unsigned(19 downto 0) := (others => '0'); 
+ 
+    signal muldiv1In1          : signed(8 downto 0);
+    signal muldiv1In2          : signed(12 downto 0);
+@@ -226,16 +231,17 @@
+    signal muldivResult2       : signed(21 downto 0) := (others => '0'); 
+    signal muldivResult2clk    : signed(21 downto 0) := (others => '0');    
+    
+-   signal mulIn1              : unsigned(31 downto 0);
+-   signal mulIn2              : unsigned(31 downto 0);
+-   signal mulResult32         : unsigned(31 downto 0) := (others => '0'); 
+-   signal mulResult32clk      : unsigned(31 downto 0) := (others => '0'); 
++   signal mulIn1              : unsigned(19 downto 0);
++   signal mulIn2              : signed(12 downto 0);
++   signal mulProd             : signed(32 downto 0);
++   signal mulResult20         : unsigned(19 downto 0) := (others => '0'); 
++   signal mulResult20clk      : unsigned(19 downto 0) := (others => '0'); 
+ 
+-   signal work_R              : unsigned(31 downto 0) := (others => '0');   
+-   signal work_G              : unsigned(31 downto 0) := (others => '0');   
+-   signal work_B              : unsigned(31 downto 0) := (others => '0');   
+-   signal work_U              : unsigned(31 downto 0) := (others => '0');   
+-   signal work_V              : unsigned(31 downto 0) := (others => '0'); 
++   signal work_R              : unsigned(19 downto 0) := (others => '0');   
++   signal work_G              : unsigned(19 downto 0) := (others => '0');   
++   signal work_B              : unsigned(19 downto 0) := (others => '0');   
++   signal work_U              : unsigned(19 downto 0) := (others => '0');   
++   signal work_V              : unsigned(19 downto 0) := (others => '0'); 
+ 
+    signal vo_diff             : integer range -4096 to 4095;
+    signal vp_diff             : integer range -4096 to 4095;
+@@ -340,13 +346,9 @@
+                  diffY10 when (mulStep = 4) else
+                  diffX21;
+    
+-   imul32u : entity work.mul32u
+-   port map 
+-   (
+-      mul1     => mulIn1,
+-      mul2     => mulIn2,
+-      result   => mulResult32
+-   );
++   -- low 20 bits of gradient * (-x or -y): -x / -y fit in 13 bits signed (x, y are -2048..2047)
++   mulProd     <= signed(mulIn1) * mulIn2;
++   mulResult20 <= unsigned(mulProd(19 downto 0));
+    
+    mulIn1 <= dxU when (state = CALCTEXTURE4 and mulStep = 0) else
+              dxV when (state = CALCTEXTURE4 and mulStep = 1) else
+@@ -359,16 +361,16 @@
+              dyG when (mulStep = 4) else 
+              dyB;
+              
+-   mulIn2 <= unsigned(to_signed(-vt(coreVertex).x, 32)) when (state = CALCTEXTURE4 and mulStep = 0) else
+-             unsigned(to_signed(-vt(coreVertex).x, 32)) when (state = CALCTEXTURE4 and mulStep = 1) else
+-             unsigned(to_signed(-vt(coreVertex).y, 32)) when (state = CALCTEXTURE4 and mulStep = 2) else
+-             unsigned(to_signed(-vt(coreVertex).y, 32)) when (state = CALCTEXTURE4 and mulStep = 3) else
+-             unsigned(to_signed(-vt(coreVertex).x, 32)) when (mulStep = 0) else 
+-             unsigned(to_signed(-vt(coreVertex).x, 32)) when (mulStep = 1) else 
+-             unsigned(to_signed(-vt(coreVertex).x, 32)) when (mulStep = 2) else 
+-             unsigned(to_signed(-vt(coreVertex).y, 32)) when (mulStep = 3) else 
+-             unsigned(to_signed(-vt(coreVertex).y, 32)) when (mulStep = 4) else 
+-             unsigned(to_signed(-vt(coreVertex).y, 32));
++   mulIn2 <= to_signed(-vt(coreVertex).x, 13) when (state = CALCTEXTURE4 and mulStep = 0) else
++             to_signed(-vt(coreVertex).x, 13) when (state = CALCTEXTURE4 and mulStep = 1) else
++             to_signed(-vt(coreVertex).y, 13) when (state = CALCTEXTURE4 and mulStep = 2) else
++             to_signed(-vt(coreVertex).y, 13) when (state = CALCTEXTURE4 and mulStep = 3) else
++             to_signed(-vt(coreVertex).x, 13) when (mulStep = 0) else 
++             to_signed(-vt(coreVertex).x, 13) when (mulStep = 1) else 
++             to_signed(-vt(coreVertex).x, 13) when (mulStep = 2) else 
++             to_signed(-vt(coreVertex).y, 13) when (mulStep = 3) else 
++             to_signed(-vt(coreVertex).y, 13) when (mulStep = 4) else 
++             to_signed(-vt(coreVertex).y, 13);
+    
+    process (clk2x)
+       variable xrec12   : signed(11 downto 0);
+@@ -389,9 +391,9 @@
+       variable skip     : std_logic; 
+       variable uFilter  : unsigned(10 downto 0);
+       variable vFilter  : unsigned(10 downto 0);
+-      variable lBase    : unsigned(31 downto 0);
++      variable lBase    : unsigned(19 downto 0);
+       variable lOn      : std_logic;
+-      variable lSum     : unsigned(31 downto 0);
++      variable lSum     : unsigned(19 downto 0);
+    begin
+       if rising_edge(clk2x) then
+          
+@@ -490,9 +492,9 @@
+                end case;
+                lSum := lBase;
+                if (lOn = '1') then
+-                  lSum := lSum + unsigned(lpY(31 downto 0));
++                  lSum := lSum + unsigned(lpY(19 downto 0));
+                   if (lineX >= 0) then
+-                     lSum := lSum + unsigned(lpX(31 downto 0));
++                     lSum := lSum + unsigned(lpX(19 downto 0));
+                   end if;
+                end if;
+                case (lpCh2) is
+@@ -794,11 +796,11 @@
+                   vo_diff_base <= resize(vo_diff * baseStep, 45);
+                   vp_diff_base <= resize(vp_diff * baseStep, 45);
+                   
+-                  base_R <= x"000" & vt(coreVertex).r & x"800";
+-                  base_G <= x"000" & vt(coreVertex).g & x"800";
+-                  base_B <= x"000" & vt(coreVertex).b & x"800";
+-                  base_U <= x"000" & vt(coreVertex).u & x"800";
+-                  base_V <= x"000" & vt(coreVertex).v & x"800";
++                  base_R <= vt(coreVertex).r & x"800";
++                  base_G <= vt(coreVertex).g & x"800";
++                  base_B <= vt(coreVertex).b & x"800";
++                  base_U <= vt(coreVertex).u & x"800";
++                  base_V <= vt(coreVertex).v & x"800";
+                   
+                   diffX10 <= to_signed(vt(1).x - vt(0).x, 13);
+                   diffX21 <= to_signed(vt(2).x - vt(1).x, 13);
+@@ -858,9 +860,9 @@
+                   end case;
+                
+                when CALCCOLOR3 =>
+-                  dxR <= unsigned(div1.quotient(31 downto 0));
+-                  dyR <= unsigned(div2.quotient(31 downto 0));
+-                  dxG <= unsigned(div3.quotient(31 downto 0));
++                  dxR <= unsigned(div1.quotient(19 downto 0));
++                  dyR <= unsigned(div2.quotient(19 downto 0));
++                  dxG <= unsigned(div3.quotient(19 downto 0));
+                   mulStep <= 0;
+                   if (div1.done = '1') then
+                      state <= CALCCOLOR3B;
+@@ -876,9 +878,9 @@
+                   end if;
+                   
+                when CALCCOLOR3B =>
+-                  dyG <= unsigned(div1.quotient(31 downto 0));
+-                  dxB <= unsigned(div2.quotient(31 downto 0));
+-                  dyB <= unsigned(div3.quotient(31 downto 0));
++                  dyG <= unsigned(div1.quotient(19 downto 0));
++                  dxB <= unsigned(div2.quotient(19 downto 0));
++                  dyB <= unsigned(div3.quotient(19 downto 0));
+                   mulStep <= 0;
+                   if (div1.done = '1') then
+                      state <= CALCCOLOR4;
+@@ -887,14 +889,14 @@
+                when CALCCOLOR4 =>
+                   mulStep <= mulStep + 1;
+                   case (mulStep) is
+-                     when 0 => mulResult32clk <= mulResult32;
+-                     when 1 => mulResult32clk <= mulResult32; base_R <= base_R + mulResult32clk;
+-                     when 2 => mulResult32clk <= mulResult32; base_G <= base_G + mulResult32clk;   
+-                     when 3 => mulResult32clk <= mulResult32; base_B <= base_B + mulResult32clk;
+-                     when 4 => mulResult32clk <= mulResult32; base_R <= base_R + mulResult32clk;
+-                     when 5 => mulResult32clk <= mulResult32; base_G <= base_G + mulResult32clk;
++                     when 0 => mulResult20clk <= mulResult20;
++                     when 1 => mulResult20clk <= mulResult20; base_R <= base_R + mulResult20clk;
++                     when 2 => mulResult20clk <= mulResult20; base_G <= base_G + mulResult20clk;   
++                     when 3 => mulResult20clk <= mulResult20; base_B <= base_B + mulResult20clk;
++                     when 4 => mulResult20clk <= mulResult20; base_R <= base_R + mulResult20clk;
++                     when 5 => mulResult20clk <= mulResult20; base_G <= base_G + mulResult20clk;
+                      when 6 =>                                               
+-                        base_B <= base_B + mulResult32clk;
++                        base_B <= base_B + mulResult20clk;
+                         if (rec_texture = '1') then
+                            state <= CALCTEXTURE1;
+                         else
+@@ -931,9 +933,9 @@
+                   end case;
+                
+                when CALCTEXTURE3 =>
+-                  dxU <= unsigned(div1.quotient(31 downto 0));
+-                  dyU <= unsigned(div2.quotient(31 downto 0));
+-                  dxV <= unsigned(div3.quotient(31 downto 0));
++                  dxU <= unsigned(div1.quotient(19 downto 0));
++                  dyU <= unsigned(div2.quotient(19 downto 0));
++                  dxV <= unsigned(div3.quotient(19 downto 0));
+                   mulStep <= 0;
+                   if (div1.done = '1') then
+                      state <= CALCTEXTURE3B;
+@@ -943,7 +945,7 @@
+                   end if;
+                   
+                when CALCTEXTURE3B =>
+-                  dyV <= unsigned(div1.quotient(31 downto 0));
++                  dyV <= unsigned(div1.quotient(19 downto 0));
+                   mulStep <= 0;
+                   if (div1.done = '1') then
+                      state <= CALCTEXTURE4;
+@@ -952,12 +954,12 @@
+                when CALCTEXTURE4 =>
+                   mulStep <= mulStep + 1;
+                   case (mulStep) is
+-                     when 0 => mulResult32clk <= mulResult32;
+-                     when 1 => mulResult32clk <= mulResult32; base_U <= base_U + mulResult32clk;
+-                     when 2 => mulResult32clk <= mulResult32; base_V <= base_V + mulResult32clk;   
+-                     when 3 => mulResult32clk <= mulResult32; base_U <= base_U + mulResult32clk;
++                     when 0 => mulResult20clk <= mulResult20;
++                     when 1 => mulResult20clk <= mulResult20; base_U <= base_U + mulResult20clk;
++                     when 2 => mulResult20clk <= mulResult20; base_V <= base_V + mulResult20clk;   
++                     when 3 => mulResult20clk <= mulResult20; base_U <= base_U + mulResult20clk;
+                      when 4 =>                                               
+-                        base_V <= base_V + mulResult32clk;
++                        base_V <= base_V + mulResult20clk;
+                         state <= PREPAREHALF;
+                      when others => null;
+                   end case;
+@@ -1018,6 +1020,7 @@
+                      filter_on <= '1';
+                   end if;
+                   
++                  -- (with the 20-bit gradients this check only sees their low 20 bits; the filter is off on the Pocket)
+                   if (textureFilter2DOff = '1' and dyU = 0 and dxV = 0) then
+                      if (dxU = 4096 or dyV = 4096) then
+                         filter_on <= '0';
