@@ -39,7 +39,7 @@
                 "name": "Track 1 (audio CD)",
                 "id": 15,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -50,7 +50,7 @@
                 "name": "Track 1",
                 "id": 16,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -61,7 +61,7 @@
                 "name": "Track 2",
                 "id": 17,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -72,7 +72,7 @@
                 "name": "Track 3",
                 "id": 18,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -83,7 +83,7 @@
                 "name": "Track 4",
                 "id": 19,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -94,7 +94,7 @@
                 "name": "Track 5",
                 "id": 20,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -105,7 +105,7 @@
                 "name": "Track 6",
                 "id": 21,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -116,7 +116,7 @@
                 "name": "Track 7",
                 "id": 22,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -127,7 +127,7 @@
                 "name": "Track 8",
                 "id": 23,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -138,7 +138,7 @@
                 "name": "Track 9",
                 "id": 24,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -149,7 +149,7 @@
                 "name": "Track 10",
                 "id": 25,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -160,7 +160,7 @@
                 "name": "Track 11",
                 "id": 26,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -171,7 +171,7 @@
                 "name": "Track 12",
                 "id": 27,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -182,7 +182,7 @@
                 "name": "Track 13",
                 "id": 28,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -193,7 +193,7 @@
                 "name": "Track 14",
                 "id": 29,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -204,7 +204,7 @@
                 "name": "Track 15",
                 "id": 30,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -215,7 +215,7 @@
                 "name": "Track 16",
                 "id": 31,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -226,7 +226,7 @@
                 "name": "Track 17",
                 "id": 32,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -237,7 +237,7 @@
                 "name": "Track 18",
                 "id": 33,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -248,7 +248,7 @@
                 "name": "Track 19",
                 "id": 34,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -259,7 +259,7 @@
                 "name": "Track 20",
                 "id": 35,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -270,7 +270,7 @@
                 "name": "Track 21",
                 "id": 36,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -281,7 +281,7 @@
                 "name": "Track 22",
                 "id": 37,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -292,7 +292,7 @@
                 "name": "Track 23",
                 "id": 38,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [
@@ -303,7 +303,7 @@
                 "name": "Track 24",
                 "id": 39,
                 "required": false,
-                "parameters": "0x2",
+                "parameters": "0x0",
                 "deferload": true,
                 "secondary": true,
                 "extensions": [

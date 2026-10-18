@@ -6,7 +6,7 @@ usage: package.py --rbf ap_core.rbf_r (--out SDROOT | --zip FILE.zip) [--bios sc
 Creates the SD card layout: everything in pocket/dist (Cores/akoaysigod.PSX JSON files, Platforms/psx.json, the
 "BIOS (no disc)" entry in Assets/psx/akoaysigod.PSX), the bitstream and LICENSE.txt in
 Cores/akoaysigod.PSX, and the empty folders the copyrighted files go in: Assets/psx/common (the BIOS, scph1001.bin)
-and Assets/psx/akoaysigod.PSX/<game folder> (the game's .bin files). Optionally --bios copies the BIOS in, --game
+and Assets/psx/common/<game folder> (the game's .bin files). Optionally --bios copies the BIOS in, --game
 writes the entry for another .cue (with --copy-bins also its .bin files). Copy SDROOT's contents to the SD card.
 With --zip the same layout goes into a zip file instead (or as well, with --out): unzip it at the SD card's root.
 """
@@ -62,19 +62,19 @@ def main():
         cue2instance.main()
         if a.copy_bins:
             inst = json.load(open(os.path.join(d, name + '.json')))['instance']
-            gdir = os.path.join(d, inst['data_path'])
+            gdir = os.path.join(common, inst['data_path'])
             os.makedirs(gdir, exist_ok=True)
             for s in inst['data_slots']:
                 src = os.path.join(os.path.dirname(os.path.abspath(cue)), s['filename'])
                 print('copying', s['filename'])
                 shutil.copyfile(src, os.path.join(gdir, s['filename']))
-    # each game entry's folder, for its .bin files
+    # each game entry's folder, for its .bin files (the track slots are platform-common)
     d = os.path.join(a.out, 'Assets', 'psx', CORE)
     for name in os.listdir(d):
         if name.endswith('.json'):
             path = json.load(open(os.path.join(d, name)))['instance'].get('data_path', '')
             if path:
-                os.makedirs(os.path.join(d, path), exist_ok=True)
+                os.makedirs(os.path.join(common, path), exist_ok=True)
     if a.zip:
         write_zip(a.out, a.zip)
         print('wrote', a.zip)
