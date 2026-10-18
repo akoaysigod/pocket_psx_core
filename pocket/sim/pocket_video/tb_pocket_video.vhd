@@ -52,14 +52,17 @@ begin
    -- video source (clkvid): registered outputs like the core
    process (clkvid)
       variable h, l, px : integer := 0;
-      variable hstart : integer;
+      variable hstart, hfirst : integer;
    begin
       if rising_edge(clkvid) then
          hstart := 480;
          ce <= '0';
          if (h mod mode_div = 0) then ce <= '1'; end if;
-         -- active area: WIDTH pixels starting at hstart (a ce position)
-         if (l >= ACT_FIRST and l <= ACT_LAST and h >= hstart and h < hstart + mode_width * mode_div) then
+         -- active area: WIDTH pixels, the first at the first ce position from hstart; like gpu_videoout_async,
+         -- hblank rises one clkvid clock after the last pixel (LINE_CLKS is odd, so that clock alternates between
+         -- the two clkpix phases from line to line)
+         hfirst := ((hstart + mode_div - 1) / mode_div) * mode_div;
+         if (l >= ACT_FIRST and l <= ACT_LAST and h >= hstart and h <= hfirst + (mode_width - 1) * mode_div) then
             hblank <= '0';
          else
             hblank <= '1';

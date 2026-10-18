@@ -34,7 +34,8 @@ architecture arch of pocket_video is
 
    -- clkvid side: active area, last active pixel, toggles for new pixel / hsync / vsync
    signal v_de           : std_logic := '0';
-   signal v_rgb          : std_logic_vector(23 downto 0) := (others => '0');
+   signal v_de_1         : std_logic := '0';
+   signal v_rgb         : std_logic_vector(23 downto 0) := (others => '0');
    signal v_pix, v_hs, v_vs : std_logic := '0';
    signal hs_1, vs_1     : std_logic := '0';
    -- clkpix side
@@ -47,11 +48,16 @@ architecture arch of pocket_video is
 begin
 
    -- clkvid: the core gives a pixel on each video_ce (at most every 4th clkvid clock, so at most one per clkpix
-   -- clock); hold it and signal it with a toggle, likewise the sync edges
+   -- clock); hold it and signal it with a toggle, likewise the sync edges.
+   -- DE falls one clkvid clock after the core's blanking starts. The core raises hblank one clock after a line's
+   -- last pixel, and clkpix samples every other clkvid clock; lines are 3413 clkvid clocks (odd), so on every
+   -- other line clkpix would see the last pixel's toggle only together with DE low and lose it: those lines were
+   -- one pixel short and the docked picture showed a stale last column.
    process (clkvid)
    begin
       if rising_edge(clkvid) then
-         v_de <= not (hblank or vblank);
+         v_de_1 <= not (hblank or vblank);
+         v_de   <= not (hblank or vblank) or v_de_1;
          if (video_ce = '1' and hblank = '0' and vblank = '0') then
             v_rgb <= video_r & video_g & video_b;
             v_pix <= not v_pix;
