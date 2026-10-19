@@ -1,6 +1,8 @@
 # BIOS and game images: never in git (bring your own)
 *.BIN
 *.bin
+!pocket/dist/Cores/*/icon.bin
+!pocket/dist/Platforms/_images/*.bin
 *.cue
 /games/
 
