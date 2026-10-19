@@ -102,6 +102,8 @@ entity psx_pocket_core is
       KeyL3 : in std_logic;
       sound_out_left : out std_logic_vector(15 downto 0);
       sound_out_right : out std_logic_vector(15 downto 0);
+      sound_tick : out std_logic;
+      sound_valid : out std_logic;
       debug_out : out std_logic_vector(255 downto 0)
    );
 end entity;
@@ -350,6 +352,8 @@ begin
       beginTransferSnac => open,
       sound_out_left => sound_out_left,
       sound_out_right => sound_out_right,
+      sound_tick => sound_tick,
+      sound_valid => sound_valid,
       debug_out => debug_out,
       increaseSSHeaderCount => '0',
       save_state => '0',
