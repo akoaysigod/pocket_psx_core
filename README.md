@@ -19,6 +19,10 @@ in `ref/upstream/rtl/`.
 - `pocket/src/fpga/core/sound_i2s.sv`, `sync_fifo.sv` and `psram_async.vhd` (a port of `psram.sv`): MIT, Adam
   Gastineau ([agg23/analogue-pocket-utils](https://github.com/agg23/analogue-pocket-utils)); the notice is in
   each file.
+- `pocket/dist/Cores/akoaysigod.PSX/icon.bin` and `pocket/dist/Platforms/_images/psx.bin`: made from a photo of a
+  PlayStation by TheShutterVision on [Pexels](https://www.pexels.com/photo/psx-console-on-white-background-9690066/)
+  ([Pexels License](https://www.pexels.com/license/)), converted with `pocket/tools/png2pocket.py`. "PlayStation" and
+  its logo are trademarks of Sony.
 - Not included and not redistributable: the BIOS (Sony), game images, and Intel's `altera_mf` simulation library
   (`sim/altera_lib`).
 
