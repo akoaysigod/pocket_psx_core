@@ -88,22 +88,16 @@ architecture arch of gte is
    signal REG_MAC3 : signed(31 downto 0);
    signal REG_IRGB : unsigned(14 downto 0);
    signal REG_ORGB : unsigned(14 downto 0);
-   signal REG_LZCS : signed(31 downto 0);
    signal REG_LZCR : signed(31 downto 0);
    
    -- GTE control regs
    signal REG_RT11  : signed(15 downto 0);
    signal REG_RT12  : signed(15 downto 0);
-   signal REG_RT13  : signed(15 downto 0);
    signal REG_RT21  : signed(15 downto 0);
-   signal REG_RT22  : signed(15 downto 0);
    signal REG_RT23  : signed(15 downto 0);
    signal REG_RT31  : signed(15 downto 0);
    signal REG_RT32  : signed(15 downto 0);
    signal REG_RT33  : signed(15 downto 0);
-   signal REG_TR0   : unsigned(31 downto 0);
-   signal REG_TR1   : unsigned(31 downto 0);
-   signal REG_TR2   : unsigned(31 downto 0);
    signal REG_LL11  : signed(15 downto 0);
    signal REG_LL12  : signed(15 downto 0);
    signal REG_LL13  : signed(15 downto 0);
@@ -113,9 +107,6 @@ architecture arch of gte is
    signal REG_LL31  : signed(15 downto 0);
    signal REG_LL32  : signed(15 downto 0);
    signal REG_LL33  : signed(15 downto 0);
-   signal REG_BK0   : unsigned(31 downto 0);
-   signal REG_BK1   : unsigned(31 downto 0);
-   signal REG_BK2   : unsigned(31 downto 0);
    signal REG_LC11  : signed(15 downto 0);
    signal REG_LC12  : signed(15 downto 0);
    signal REG_LC13  : signed(15 downto 0);
@@ -125,16 +116,7 @@ architecture arch of gte is
    signal REG_LC31  : signed(15 downto 0);
    signal REG_LC32  : signed(15 downto 0);
    signal REG_LC33  : signed(15 downto 0);
-   signal REG_FC0   : unsigned(31 downto 0);
-   signal REG_FC1   : unsigned(31 downto 0);
-   signal REG_FC2   : unsigned(31 downto 0);
-   signal REG_OFX   : unsigned(31 downto 0);
-   signal REG_OFY   : unsigned(31 downto 0);
-   signal REG_H     : signed(15 downto 0);
    signal REG_DQA   : signed(15 downto 0);
-   signal REG_DQB   : unsigned(31 downto 0);
-   signal REG_ZSF3  : signed(15 downto 0);
-   signal REG_ZSF4  : signed(15 downto 0);
    signal REG_FLAG  : unsigned(31 downto 0);
    
    -- widescreen
@@ -170,6 +152,37 @@ architecture arch of gte is
       CALC_NCCT
    );
    signal state : tstate := IDLE;
+   
+   -- Pocket: the last calcStep of every command (the batch commands only get there in their last pass, the
+   -- earlier passes restart at step 0), so the end of a command is one compare instead of a branch per command
+   function lastStep(s : tstate) return integer is
+   begin
+      case (s) is
+         when CALC_RTPS  => return 25;
+         when CALC_RTPT  => return 41;
+         when CALC_NCLIP => return 11;
+         when CALC_OP    => return 7;
+         when CALC_DPCS  => return 10;
+         when CALC_DPCT  => return 10;
+         when CALC_INTPL => return 10;
+         when CALC_MVMVA => return 10;
+         when CALC_NCDS  => return 33;
+         when CALC_NCDT  => return 39;
+         when CALC_CDP   => return 20;
+         when CALC_NCCS  => return 29;
+         when CALC_NCCT  => return 37;
+         when CALC_CC    => return 16;
+         when CALC_NCS   => return 22;
+         when CALC_NCT   => return 28;
+         when CALC_SQR   => return 5;
+         when CALC_DPCL  => return 10;
+         when CALC_AVSZ3 => return 5;
+         when CALC_AVSZ4 => return 7;
+         when CALC_GPF   => return 4;
+         when CALC_GPL   => return 5;
+         when others     => return 63;
+      end case;
+   end function;
    
    signal calcStep         : integer range 0 to 63;
    signal batchCount       : integer range 0 to 2;
@@ -288,7 +301,27 @@ architecture arch of gte is
    signal trQ              : tTrQ;
    signal matCode          : tCode9 := (others => "00");
    signal trCode           : tCode3 := (others => "00");
+   -- Pocket: OFX, OFY, H, DQB, ZSF3, ZSF4 (control registers 56-62 except DQA) are only read one at a time
+   -- (MAC0's offset / Z factor, the divider's H), so they come from one RAM addressed by ofCode = register - 56,
+   -- which is set one step before each use (ofCode block below); a register reads 0 until written after reset
+   signal ofCode           : std_logic_vector(2 downto 0) := (others => '0');
+   signal ofQ              : std_logic_vector(31 downto 0);
+   signal ofVal            : signed(31 downto 0);
+   signal ofWe             : std_logic;
+   -- Pocket (timing): the falling-edge M10Ks (translation, OF) write from registered copies of the CPU write
+   -- (one clk2x after the write cycle) instead of from the CPU's write signals through the decode, which left
+   -- only half a clk2x cycle; nothing reads them in between (writes stall while the GTE is busy)
+   signal trWe             : std_logic_vector(2 downto 0);
+   signal trWe_r           : std_logic_vector(2 downto 0) := (others => '0');
+   signal ofWe_r           : std_logic := '0';
+   signal m10kWa           : std_logic_vector(5 downto 0) := (others => '0');
+   signal m10kWd           : std_logic_vector(31 downto 0) := (others => '0');
    signal matrix3_00       : signed(15 downto 0) := (others => '0');
+   -- Pocket: MVMVA's "garbage matrix" (MX = 3): rows 1 and 2 are RT13 and RT22, read from the RT copies of
+   -- elements 2 and 4 (their own values are not used then), so no flip-flop copies of RT13 / RT22
+   signal matGarbage       : std_logic := '0';
+   signal matRT13          : signed(15 downto 0);
+   signal matRT22          : signed(15 downto 0);
    signal matrix3_01       : signed(15 downto 0) := (others => '0');
    signal matrix3_02       : signed(15 downto 0) := (others => '0');
 
@@ -310,7 +343,7 @@ architecture arch of gte is
       variable i : integer range 0 to 63;
    begin
       i := to_integer(a);
-      return (i <= 6 or i = 23 or (i >= 32 and i <= 62));
+      return (i <= 6 or i = 23 or i = 30 or (i >= 32 and i <= 62));  -- Pocket: + LZCS (only read back)
    end function;
 
    -- readback value of a shadowed register after the CPU writes d to it
@@ -369,24 +402,42 @@ begin
    end generate;
 
    gtrram : for t in 0 to 2 generate
-      signal we : std_logic;
    begin
-      we <= '1' when (shadowWe = '1' and gte_writeAddr(5) = '1' and gte_writeAddr(4 downto 3) /= "11" and to_integer(gte_writeAddr(2 downto 0)) = 5 + t) else '0';
+      trWe(t) <= '1' when (shadowWe = '1' and gte_writeAddr(5) = '1' and gte_writeAddr(4 downto 3) /= "11" and to_integer(gte_writeAddr(2 downto 0)) = 5 + t) else '0';
       itrram : entity mem.RamM10Kn  -- Pocket: M10K on the falling edge instead of MLAB (frees LABs)
       generic map (width => 32, widthad => 2)
-      port map (inclock => clk2x, wren => we, data => std_logic_vector(gte_writeData), wraddress => std_logic_vector(gte_writeAddr(4 downto 3)),
+      port map (inclock => clk2x, wren => trWe_r(t), data => m10kWd, wraddress => m10kWa(4 downto 3),
                 rdaddress => trCode(t), q => trQ(t));
    end generate;
 
-   matrix00 <= matrix3_00 when (matCode(0) = "11") else signed(matQ(0)) when matValid(shadowValid, unsigned(matCode(0)), 0) else (others => '0');
-   matrix01 <= matrix3_01 when (matCode(1) = "11") else signed(matQ(1)) when matValid(shadowValid, unsigned(matCode(1)), 1) else (others => '0');
-   matrix02 <= matrix3_02 when (matCode(2) = "11") else signed(matQ(2)) when matValid(shadowValid, unsigned(matCode(2)), 2) else (others => '0');
-   matrix10 <= REG_RT13   when (matCode(3) = "11") else signed(matQ(3)) when matValid(shadowValid, unsigned(matCode(3)), 3) else (others => '0');
-   matrix11 <= REG_RT13   when (matCode(4) = "11") else signed(matQ(4)) when matValid(shadowValid, unsigned(matCode(4)), 4) else (others => '0');
-   matrix12 <= REG_RT13   when (matCode(5) = "11") else signed(matQ(5)) when matValid(shadowValid, unsigned(matCode(5)), 5) else (others => '0');
-   matrix20 <= REG_RT22   when (matCode(6) = "11") else signed(matQ(6)) when matValid(shadowValid, unsigned(matCode(6)), 6) else (others => '0');
-   matrix21 <= REG_RT22   when (matCode(7) = "11") else signed(matQ(7)) when matValid(shadowValid, unsigned(matCode(7)), 7) else (others => '0');
-   matrix22 <= REG_RT22   when (matCode(8) = "11") else signed(matQ(8)) when matValid(shadowValid, unsigned(matCode(8)), 8) else (others => '0');
+   ofWe <= '1' when (shadowWe = '1' and gte_writeAddr(5 downto 3) = "111") else '0';
+   iofram : entity mem.RamM10Kn
+   generic map (width => 32, widthad => 3)
+   port map (inclock => clk2x, wren => ofWe_r, data => m10kWd, wraddress => m10kWa(2 downto 0),
+             rdaddress => ofCode, q => ofQ);
+
+   process (clk2x)
+   begin
+      if rising_edge(clk2x) then
+         trWe_r <= trWe;
+         ofWe_r <= ofWe;
+         m10kWa <= std_logic_vector(gte_writeAddr);
+         m10kWd <= std_logic_vector(gte_writeData);
+      end if;
+   end process;
+   ofVal <= signed(ofQ) when (shadowValid(56 + to_integer(unsigned(ofCode))) = '1') else (others => '0');
+
+   matRT13  <= signed(matQ(2)) when matValid(shadowValid, "00", 2) else (others => '0');   -- matCode(2) = RT while matGarbage
+   matRT22  <= signed(matQ(4)) when matValid(shadowValid, "00", 4) else (others => '0');   -- matCode(4) = RT while matGarbage
+   matrix00 <= matrix3_00 when (matGarbage = '1') else signed(matQ(0)) when matValid(shadowValid, unsigned(matCode(0)), 0) else (others => '0');
+   matrix01 <= matrix3_01 when (matGarbage = '1') else signed(matQ(1)) when matValid(shadowValid, unsigned(matCode(1)), 1) else (others => '0');
+   matrix02 <= matrix3_02 when (matGarbage = '1') else signed(matQ(2)) when matValid(shadowValid, unsigned(matCode(2)), 2) else (others => '0');
+   matrix10 <= matRT13    when (matGarbage = '1') else signed(matQ(3)) when matValid(shadowValid, unsigned(matCode(3)), 3) else (others => '0');
+   matrix11 <= matRT13    when (matGarbage = '1') else signed(matQ(4)) when matValid(shadowValid, unsigned(matCode(4)), 4) else (others => '0');
+   matrix12 <= matRT13    when (matGarbage = '1') else signed(matQ(5)) when matValid(shadowValid, unsigned(matCode(5)), 5) else (others => '0');
+   matrix20 <= matRT22    when (matGarbage = '1') else signed(matQ(6)) when matValid(shadowValid, unsigned(matCode(6)), 6) else (others => '0');
+   matrix21 <= matRT22    when (matGarbage = '1') else signed(matQ(7)) when matValid(shadowValid, unsigned(matCode(7)), 7) else (others => '0');
+   matrix22 <= matRT22    when (matGarbage = '1') else signed(matQ(8)) when matValid(shadowValid, unsigned(matCode(8)), 8) else (others => '0');
 
    translate0 <= (others => '0') when (trCode(0) = "11") else signed(trQ(0)) when trValid(shadowValid, unsigned(trCode(0)), 0) else (others => '0');
    translate1 <= (others => '0') when (trCode(1) = "11") else signed(trQ(1)) when trValid(shadowValid, unsigned(trCode(1)), 1) else (others => '0');
@@ -539,21 +590,15 @@ begin
             REG_MAC3 <= (others => '0');
             REG_IRGB <= (others => '0');
             REG_ORGB <= (others => '0');
-            REG_LZCS <= (others => '0');
             REG_LZCR <= (others => '0');
             
             REG_RT11 <= (others => '0');
             REG_RT12 <= (others => '0');
-            REG_RT13 <= (others => '0');
             REG_RT21 <= (others => '0');
-            REG_RT22 <= (others => '0');
             REG_RT23 <= (others => '0');
             REG_RT31 <= (others => '0');
             REG_RT32 <= (others => '0');
             REG_RT33 <= (others => '0');
-            REG_TR0  <= (others => '0');
-            REG_TR1  <= (others => '0');
-            REG_TR2  <= (others => '0');
             REG_LL11 <= (others => '0');
             REG_LL12 <= (others => '0');
             REG_LL13 <= (others => '0');
@@ -563,9 +608,6 @@ begin
             REG_LL31 <= (others => '0');
             REG_LL32 <= (others => '0');
             REG_LL33 <= (others => '0');
-            REG_BK0  <= (others => '0');
-            REG_BK1  <= (others => '0');
-            REG_BK2  <= (others => '0');
             REG_LC11 <= (others => '0');
             REG_LC12 <= (others => '0');
             REG_LC13 <= (others => '0');
@@ -575,16 +617,7 @@ begin
             REG_LC31 <= (others => '0');
             REG_LC32 <= (others => '0');
             REG_LC33 <= (others => '0');
-            REG_FC0  <= (others => '0');
-            REG_FC1  <= (others => '0');
-            REG_FC2  <= (others => '0');
-            REG_OFX  <= (others => '0');
-            REG_OFY  <= (others => '0');
-            REG_H    <= (others => '0');
             REG_DQA  <= (others => '0');
-            REG_DQB  <= (others => '0');
-            REG_ZSF3 <= (others => '0');
-            REG_ZSF4 <= (others => '0');
             REG_FLAG <= (others => '0');
             
          elsif (ce = '1' or loading_savestate = '1') then
@@ -633,7 +666,6 @@ begin
                      if (REG_IR2 < 0) then readData_mux( 9 downto  5) <= "00000"; elsif (REG_IR2(15 downto 7) > 31) then readData_mux( 9 downto  5) <= "11111"; else readData_mux( 9 downto  5) <= unsigned(REG_IR2(11 downto 7)); end if;
                      if (REG_IR3 < 0) then readData_mux(14 downto 10) <= "00000"; elsif (REG_IR3(15 downto 7) > 31) then readData_mux(14 downto 10) <= "11111"; else readData_mux(14 downto 10) <= unsigned(REG_IR3(11 downto 7)); end if;
    
-                  when 30 => readData_mux <= unsigned(REG_LZCS);
                   when 31 => readData_mux <= unsigned(REG_LZCR);
                   when 63 => readData_mux <= REG_FLAG;
                   when others => null;
@@ -688,7 +720,6 @@ begin
                      end if;
                   when 29 => -- read only
                   when 30 =>
-                     REG_LZCS <= signed(gte_writeData);
                      leadCountData := gte_writeData;
                      if (gte_writeData(31) = '1') then
                         leadCountData := not gte_writeData;
@@ -702,36 +733,21 @@ begin
                      
                   when 31 => -- read only
                   when 32 => REG_RT11 <= signed(gte_writeData(15 downto 0)); REG_RT12 <= signed(gte_writeData(31 downto 16));
-                  when 33 => REG_RT13 <= signed(gte_writeData(15 downto 0)); REG_RT21 <= signed(gte_writeData(31 downto 16));
-                  when 34 => REG_RT22 <= signed(gte_writeData(15 downto 0)); REG_RT23 <= signed(gte_writeData(31 downto 16));
+                  when 33 => REG_RT21 <= signed(gte_writeData(31 downto 16));
+                  when 34 => REG_RT23 <= signed(gte_writeData(31 downto 16));
                   when 35 => REG_RT31 <= signed(gte_writeData(15 downto 0)); REG_RT32 <= signed(gte_writeData(31 downto 16));
                   when 36 => REG_RT33 <= signed(gte_writeData(15 downto 0));
-                  when 37 => REG_TR0  <= gte_writeData;
-                  when 38 => REG_TR1  <= gte_writeData;
-                  when 39 => REG_TR2  <= gte_writeData;
                   when 40 => REG_LL11 <= signed(gte_writeData(15 downto 0)); REG_LL12 <= signed(gte_writeData(31 downto 16));
                   when 41 => REG_LL13 <= signed(gte_writeData(15 downto 0)); REG_LL21 <= signed(gte_writeData(31 downto 16));
                   when 42 => REG_LL22 <= signed(gte_writeData(15 downto 0)); REG_LL23 <= signed(gte_writeData(31 downto 16));
                   when 43 => REG_LL31 <= signed(gte_writeData(15 downto 0)); REG_LL32 <= signed(gte_writeData(31 downto 16));
                   when 44 => REG_LL33 <= signed(gte_writeData(15 downto 0));
-                  when 45 => REG_BK0  <= gte_writeData;
-                  when 46 => REG_BK1  <= gte_writeData;
-                  when 47 => REG_BK2  <= gte_writeData;
                   when 48 => REG_LC11 <= signed(gte_writeData(15 downto 0)); REG_LC12 <= signed(gte_writeData(31 downto 16));
                   when 49 => REG_LC13 <= signed(gte_writeData(15 downto 0)); REG_LC21 <= signed(gte_writeData(31 downto 16));
                   when 50 => REG_LC22 <= signed(gte_writeData(15 downto 0)); REG_LC23 <= signed(gte_writeData(31 downto 16));
                   when 51 => REG_LC31 <= signed(gte_writeData(15 downto 0)); REG_LC32 <= signed(gte_writeData(31 downto 16));
                   when 52 => REG_LC33 <= signed(gte_writeData(15 downto 0));
-                  when 53 => REG_FC0  <= gte_writeData;
-                  when 54 => REG_FC1  <= gte_writeData;
-                  when 55 => REG_FC2  <= gte_writeData;
-                  when 56 => REG_OFX  <= gte_writeData;
-                  when 57 => REG_OFY  <= gte_writeData;
-                  when 58 => REG_H    <= signed(gte_writeData(15 downto 0));
                   when 59 => REG_DQA  <= signed(gte_writeData(15 downto 0));
-                  when 60 => REG_DQB  <= gte_writeData;
-                  when 61 => REG_ZSF3 <= signed(gte_writeData(15 downto 0));
-                  when 62 => REG_ZSF4 <= signed(gte_writeData(15 downto 0));
                   when 63 => 
                      REG_FLAG(30 downto 12) <= gte_writeData(30 downto 12);
                      REG_FLAG(31) <= '0';
@@ -763,6 +779,7 @@ begin
                      cmdTV    <= gte_cmdData(14 downto 13);
                      case (to_integer(gte_cmdData(5 downto 0))) is
                         when 16#01# => state <= CALC_RTPS;
+                                       translate0_ld := '1'; translate0_c := 0; translate1_ld := '1'; translate1_c := 0; translate2_ld := '1'; translate2_c := 0;
                                        matrix00_ld := '1'; matrix00_c := 0; matrix01_ld := '1'; matrix01_c := 0; matrix02_ld := '1'; matrix02_c := 0;
                                        matrix10_ld := '1'; matrix10_c := 0; matrix11_ld := '1'; matrix11_c := 0; matrix12_ld := '1'; matrix12_c := 0;
                                        matrix20_ld := '1'; matrix20_c := 0; matrix21_ld := '1'; matrix21_c := 0; matrix22_ld := '1'; matrix22_c := 0;
@@ -773,7 +790,9 @@ begin
                                        matrix10_ld := '1'; matrix10_c := 0; matrix11_ld := '1'; matrix11_c := 0; matrix12_ld := '1'; matrix12_c := 0;
                                        matrix20_ld := '1'; matrix20_c := 0; matrix21_ld := '1'; matrix21_c := 0; matrix22_ld := '1'; matrix22_c := 0;
                         when 16#10# => state <= CALC_DPCS; calcColor <= REG_RGBC(23 downto 0);
+                                       translate0_ld := '1'; translate0_c := 2; translate1_ld := '1'; translate1_c := 2; translate2_ld := '1'; translate2_c := 2;
                         when 16#11# => state <= CALC_INTPL;
+                                       translate0_ld := '1'; translate0_c := 2; translate1_ld := '1'; translate1_c := 2; translate2_ld := '1'; translate2_c := 2;
                         when 16#12# => state <= CALC_MVMVA;
                                     case (gte_cmdData(18 downto 17)) is
                                        when "00" => matrix00_ld := '1'; matrix00_c := 0; matrix01_ld := '1'; matrix01_c := 0; matrix02_ld := '1'; matrix02_c := 0;
@@ -810,31 +829,42 @@ begin
                                     end case;
                      
                         when 16#13# => state <= CALC_NCDS;
+                                       translate0_ld := '1'; translate0_c := 1; translate1_ld := '1'; translate1_c := 1; translate2_ld := '1'; translate2_c := 1;
                         when 16#14# => state <= CALC_CDP;
+                                       translate0_ld := '1'; translate0_c := 1; translate1_ld := '1'; translate1_c := 1; translate2_ld := '1'; translate2_c := 1;
                                        matrix00_ld := '1'; matrix00_c := 2; matrix01_ld := '1'; matrix01_c := 2; matrix02_ld := '1'; matrix02_c := 2;
                                        matrix10_ld := '1'; matrix10_c := 2; matrix11_ld := '1'; matrix11_c := 2; matrix12_ld := '1'; matrix12_c := 2;
                                        matrix20_ld := '1'; matrix20_c := 2; matrix21_ld := '1'; matrix21_c := 2; matrix22_ld := '1'; matrix22_c := 2;
                         when 16#16# => state <= CALC_NCDT;
+                                       translate0_ld := '1'; translate0_c := 1; translate1_ld := '1'; translate1_c := 1; translate2_ld := '1'; translate2_c := 1;
                         when 16#1B# => state <= CALC_NCCS;
+                                       translate0_ld := '1'; translate0_c := 1; translate1_ld := '1'; translate1_c := 1; translate2_ld := '1'; translate2_c := 1;
                         when 16#1C# => state <= CALC_CC;
+                                       translate0_ld := '1'; translate0_c := 1; translate1_ld := '1'; translate1_c := 1; translate2_ld := '1'; translate2_c := 1;
                                        matrix00_ld := '1'; matrix00_c := 2; matrix01_ld := '1'; matrix01_c := 2; matrix02_ld := '1'; matrix02_c := 2;
                                        matrix10_ld := '1'; matrix10_c := 2; matrix11_ld := '1'; matrix11_c := 2; matrix12_ld := '1'; matrix12_c := 2;
                                        matrix20_ld := '1'; matrix20_c := 2; matrix21_ld := '1'; matrix21_c := 2; matrix22_ld := '1'; matrix22_c := 2;
                         when 16#1E# => state <= CALC_NCS;
+                                       translate0_ld := '1'; translate0_c := 1; translate1_ld := '1'; translate1_c := 1; translate2_ld := '1'; translate2_c := 1;
                         when 16#20# => state <= CALC_NCT;
+                                       translate0_ld := '1'; translate0_c := 1; translate1_ld := '1'; translate1_c := 1; translate2_ld := '1'; translate2_c := 1;
                         when 16#28# => state <= CALC_SQR;
                         when 16#29# => state <= CALC_DPCL;
+                                       translate0_ld := '1'; translate0_c := 2; translate1_ld := '1'; translate1_c := 2; translate2_ld := '1'; translate2_c := 2;
                         when 16#2A# => state <= CALC_DPCT; calcColor <= REG_RGB0(23 downto 0);
+                                       translate0_ld := '1'; translate0_c := 2; translate1_ld := '1'; translate1_c := 2; translate2_ld := '1'; translate2_c := 2;
                         when 16#2D# => state <= CALC_AVSZ3;
                         when 16#2E# => state <= CALC_AVSZ4;
                         when 16#30# => state <= CALC_RTPT;
+                                       translate0_ld := '1'; translate0_c := 0; translate1_ld := '1'; translate1_c := 0; translate2_ld := '1'; translate2_c := 0;
                                        matrix00_ld := '1'; matrix00_c := 0; matrix01_ld := '1'; matrix01_c := 0; matrix02_ld := '1'; matrix02_c := 0;
                                        matrix10_ld := '1'; matrix10_c := 0; matrix11_ld := '1'; matrix11_c := 0; matrix12_ld := '1'; matrix12_c := 0;
                                        matrix20_ld := '1'; matrix20_c := 0; matrix21_ld := '1'; matrix21_c := 0; matrix22_ld := '1'; matrix22_c := 0;
                                        vector0_ld := '1'; vector0_c := 0; vector1_ld := '1'; vector1_c := 0; vector2_ld := '1'; vector2_c := 0;
                         when 16#3D# => state <= CALC_GPF;
                         when 16#3E# => state <= CALC_GPL;
-                        when 16#3F# => state <= CALC_NCCT;                        
+                        when 16#3F# => state <= CALC_NCCT;
+                                       translate0_ld := '1'; translate0_c := 1; translate1_ld := '1'; translate1_c := 1; translate2_ld := '1'; translate2_c := 1;
                         when others => gte_busy <= '0';
                      end case;
                      
@@ -871,7 +901,6 @@ begin
                      when 15 => mac0_mode := 1; mac0_c1 := 2; mac0_c2 := 0; mac0_c3 := 2; mac0_fl := ('0', '0', '1', '1', '1', '0', '1');
                                
                      when 17 => if (turbomode = '1') then state <= IDLE; end if;
-                     when 25 => state <= IDLE;
                      when others => null;
                   end case;
                   
@@ -941,7 +970,6 @@ begin
                      when 21 =>  mac0_mode := 1; mac0_c1 := 2; mac0_c2 := 0; mac0_c3 := 2; mac0_fl := ('0', '0', '1', '1', '1', '0', '1');
                                
                      when 23 => if (turbomode = '1') then state <= IDLE; end if;
-                     when 41 => state <= IDLE;
                      when others => null;
                   end case;
                
@@ -955,7 +983,6 @@ begin
                      when 4  => mac0_mode := 1; mac0_c1 := 8; mac0_c2 := 3; mac0_c3 := 3; mac0_fl := ('1', '0', '0', '0', '0', '1', '1'); 
                      when 5  => mac0_mode := 1; mac0_c1 := 9; mac0_c2 := 1; mac0_c3 := 3; mac0_fl := ('1', '0', '0', '0', '1', '1', '1'); 
                      when 7  => if (turbomode = '1') then state <= IDLE; end if;
-                     when 11 => state <= IDLE;
                      when others => null;
                   end case;
                   
@@ -971,7 +998,6 @@ begin
                                mac3_mode := 1; mac3_ca := 4; mac3_cb := 4; mac3_cadd := 1; mac3_fl := ('1', '0', cmdShift, '1', cmdShift, cmdShift, cmdsatIR, cmdsatIR, '1', '1');
                      
                      when 3 => if (turbomode = '1') then state <= IDLE; end if;
-                     when 7 => state <= IDLE;
                      when others => null;
                   end case;
                   
@@ -1003,7 +1029,6 @@ begin
                            calcColor  <= REG_RGB0(23 downto 0);
                         end if;
                         
-                     when 10 => state <= IDLE;
                      when others => null;
                   end case;               
                   
@@ -1025,7 +1050,6 @@ begin
                      when 5 => pushRGBfromMAC <= '1';
                     
                      when 8 => if (turbomode = '1') then state <= IDLE; end if;
-                     when 10 => state <= IDLE;
                      when others => null;
                   end case;
                   
@@ -1064,7 +1088,6 @@ begin
                                mac3_mode := 1; mac3_ca := 2; mac3_cb := 2; mac3_cadd := 1; mac3_fl := ('0', '0', cmdShift, '1', cmdShift, cmdShift, cmdsatIR, cmdsatIR, '1', '1');
                     
                      when 6 => if (turbomode = '1') then state <= IDLE; end if;
-                     when 10 => state <= IDLE;
                      when others => null;
                   end case;
                
@@ -1092,6 +1115,7 @@ begin
                      when 3 => mac1_mode := 1; mac1_ca := 2; mac1_cb := 2; mac1_cadd := 1; mac1_fl := ('0', '0', cmdShift, '1', cmdShift, cmdShift, cmdsatIR, cmdsatIR, '1', '1'); 
                                mac2_mode := 1; mac2_ca := 2; mac2_cb := 2; mac2_cadd := 1; mac2_fl := ('0', '0', cmdShift, '1', cmdShift, cmdShift, cmdsatIR, cmdsatIR, '1', '1'); 
                                mac3_mode := 1; mac3_ca := 2; mac3_cb := 2; mac3_cadd := 1; mac3_fl := ('0', '0', cmdShift, '1', cmdShift, cmdShift, cmdsatIR, cmdsatIR, '1', '1');
+                               translate0_ld := '1'; translate0_c := 1; translate1_ld := '1'; translate1_c := 1; translate2_ld := '1'; translate2_c := 1;  -- BK for step 4
                                                                                                              
                      --  mat mul with color matrix                                                           
                      when 4 => mac1_mode := 2; mac1_cv := 4; mac1_csh := 1; mac1_cadd := 1; mac1_fl := ('0', '0', '0', '0', '0', '0', '0', '0', '0', '1'); 
@@ -1121,6 +1145,7 @@ begin
                      when 13 => mac1_mode := 2; mac1_cv := 5; mac1_csh := 2; mac1_cadd := 1; mac1_fl := ('0', '0', '0', '0', '0', '0', '0', '0', '0', '1'); 
                                 mac2_mode := 2; mac2_cv := 5; mac2_csh := 2; mac2_cadd := 1; mac2_fl := ('0', '0', '0', '0', '0', '0', '0', '0', '0', '1'); 
                                 mac3_mode := 2; mac3_cv := 5; mac3_csh := 2; mac3_cadd := 1; mac3_fl := ('0', '0', '0', '0', '0', '0', '0', '0', '0', '1');
+                                translate0_ld := '1'; translate0_c := 2; translate1_ld := '1'; translate1_c := 2; translate2_ld := '1'; translate2_c := 2;  -- FC for step 14
 
                      -- InterpolateColor
                      when 14 => mac1_mode := 2; mac1_cv := 1; mac1_csh := 1; mac1_cadd := 1; mac1_fl := ('1', '1', cmdShift, '1', cmdShift, cmdShift, '0', '0', '1', '1'); 
@@ -1143,8 +1168,6 @@ begin
                            batchCount <= batchCount + 1;
                         end if;
                      
-                     when 33 => if (state = CALC_NCDS) then state <= IDLE; end if;
-                     when 39 => state <= IDLE;   
                      when others => null;
                   end case;        
 
@@ -1176,6 +1199,7 @@ begin
                      when 8 =>  mac1_mode := 2; mac1_cv := 5; mac1_csh := 2; mac1_cadd := 1; mac1_fl := ('0', '0', '0', '0', '0', '0', '0', '0', '0', '1'); 
                                 mac2_mode := 2; mac2_cv := 5; mac2_csh := 2; mac2_cadd := 1; mac2_fl := ('0', '0', '0', '0', '0', '0', '0', '0', '0', '1'); 
                                 mac3_mode := 2; mac3_cv := 5; mac3_csh := 2; mac3_cadd := 1; mac3_fl := ('0', '0', '0', '0', '0', '0', '0', '0', '0', '1');
+                                translate0_ld := '1'; translate0_c := 2; translate1_ld := '1'; translate1_c := 2; translate2_ld := '1'; translate2_c := 2;  -- FC for step 9
 
                      -- InterpolateColor
                      when 9 =>  mac1_mode := 2; mac1_cv := 1; mac1_csh := 1; mac1_cadd := 1; mac1_fl := ('1', '1', cmdShift, '1', cmdShift, cmdShift, '0', '0', '1', '1'); 
@@ -1189,7 +1213,6 @@ begin
                      when 13 => pushRGBfromMAC <= '1';
                                
                      when 16 => if (turbomode = '1') then state <= IDLE; end if;
-                     when 20 => state <= IDLE;
                      when others => null;
                   end case;   
 
@@ -1259,8 +1282,6 @@ begin
                            batchCount <= batchCount + 1;
                         end if;
                      
-                     when 29 => if (state = CALC_NCCS) then state <= IDLE; end if;
-                     when 37 => state <= IDLE;
                      when others => null;
                   end case;  
                   
@@ -1296,7 +1317,6 @@ begin
                      when 9 => pushRGBfromMAC <= '1';
                                
                      when 12 => if (turbomode = '1') then state <= IDLE; end if;
-                     when 16 => state <= IDLE;
                      when others => null;
                   end case; 
 
@@ -1356,8 +1376,6 @@ begin
                            calcStep   <= 0;
                            batchCount <= batchCount + 1;
                         end if;
-                     when 22 => if (state = CALC_NCS) then state <= IDLE; end if;
-                     when 28 => state <= IDLE;
                      when others => null;
                   end case;                  
                   
@@ -1368,7 +1386,6 @@ begin
                                mac2_mode := 1; mac2_ca := 5; mac2_cb := 6; mac2_cadd := 1; mac2_fl := ('0', '0', cmdShift, '1', cmdShift, cmdShift, cmdsatIR, cmdsatIR, '0', '1'); 
                                mac3_mode := 1; mac3_ca := 5; mac3_cb := 6; mac3_cadd := 1; mac3_fl := ('0', '0', cmdShift, '1', cmdShift, cmdShift, cmdsatIR, cmdsatIR, '0', '1'); 
                      when 2 => if (turbomode = '1') then state <= IDLE; end if;
-                     when 5 => state <= IDLE;
                      when others => null;
                   end case;
                   
@@ -1394,7 +1411,6 @@ begin
                                 mac3_mode := 1; mac3_ca := 5; mac3_cb := 5; mac3_cadd := 2; mac3_fl := ('0', '0', cmdShift, '1', cmdShift, cmdShift, cmdsatIR, cmdsatIR, '0', '1');
 
                      when 7  => pushRGBfromMAC <= '1';
-                     when 10 => state <= IDLE;
                      when others => null;
                   end case;
 
@@ -1405,7 +1421,6 @@ begin
                      when 1 => mac0_mode := 1; mac0_c1 := 11; mac0_c2 := 4; mac0_c3 := 3; mac0_fl := ('0', '0', '0', '0', '1', '1', '1'); 
                      when 2 => mac0_mode := 1; mac0_c1 := 12; mac0_c2 := 4; mac0_c3 := 3; mac0_fl := ('0', '0', '0', '0', '1', '1', '1'); 
                      when 3 => setOTZ <= '1';
-                     when 5 => state <= IDLE;
                      when others => null;
                   end case;                  
                
@@ -1417,7 +1432,6 @@ begin
                      when 2 => mac0_mode := 1; mac0_c1 := 11; mac0_c2 := 5; mac0_c3 := 3; mac0_fl := ('0', '0', '0', '0', '1', '1', '1'); 
                      when 3 => mac0_mode := 1; mac0_c1 := 12; mac0_c2 := 5; mac0_c3 := 3; mac0_fl := ('0', '0', '0', '0', '1', '1', '1'); 
                      when 4 => setOTZ <= '1';
-                     when 7 => state <= IDLE;
                      when others => null;
                   end case;  
             
@@ -1429,7 +1443,6 @@ begin
                                mac3_mode := 1; mac3_ca := 5; mac3_cb := 5; mac3_cadd := 1; mac3_fl := ('0', '0', cmdShift, '1', cmdShift, cmdShift, cmdsatIR, cmdsatIR, '0', '1');
 
                      when 1 => pushRGBfromMAC <= '1';
-                     when 4 => state <= IDLE;
                      when others => null;
                   end case;
                
@@ -1451,14 +1464,46 @@ begin
                                mac3_mode := 1; mac3_ca := 5; mac3_cb := 5; mac3_cadd := 1; mac3_fl := ('0', '0', cmdShift, '1', cmdShift, cmdShift, cmdsatIR, cmdsatIR, '1', '1');
 
                      when 3 => pushRGBfromMAC <= '1';
-                     when 5 => state <= IDLE;
                      when others => null;
                   end case;
             
             end case;
+            
+            if (state /= IDLE and calcStep = lastStep(state)) then
+               state <= IDLE;
+            end if;
+            
+            -- ofCode for the next step (see ofCode): H for the divides, then OFX / OFY / DQB for MAC0
+            case (state) is
+               when IDLE =>
+                  if (gte_cmdEna = '1' and clk2xIndex = '1') then
+                     case (to_integer(gte_cmdData(5 downto 0))) is
+                        when 16#01# | 16#30# => ofCode <= "010";  -- RTPS / RTPT: H
+                        when 16#2D#          => ofCode <= "101";  -- AVSZ3: ZSF3
+                        when 16#2E#          => ofCode <= "110";  -- AVSZ4: ZSF4
+                        when others          => null;
+                     end case;
+                  end if;
+               when CALC_RTPS =>
+                  case (calcStep) is
+                     when 4      => ofCode <= "000";  -- OFX at 12 (H is read at 4)
+                     when 12     => ofCode <= "001";  -- OFY at 13
+                     when 13     => ofCode <= "100";  -- DQB at 15
+                     when others => null;
+                  end case;
+               when CALC_RTPT =>
+                  case (calcStep) is
+                     when 10 | 13 | 16 => ofCode <= "000";  -- OFX at 12 / 15 / 18 (H is read at 4, 7, 10)
+                     when 12 | 15 | 18 => ofCode <= "001";  -- OFY at 13 / 16 / 19
+                     when 19           => ofCode <= "100";  -- DQB at 21
+                     when others       => null;
+                  end case;
+               when others => null;
+            end case;
          -- latch loads from the select codes (Pocket: compact multiplexers)
          if (matrix00_ld = '1') then
             matCode(0) <= std_logic_vector(to_unsigned(matrix00_c, 2));
+            if (matrix00_c = 3) then matGarbage <= '1'; else matGarbage <= '0'; end if;   -- all nine are loaded together
             if (matrix00_c = 3) then matrix3_00 <= to_signed(0, 16) - signed((x"0" & REG_RGBC(7 downto 0) & x"0")); end if;
          end if;
          if (matrix01_ld = '1') then
@@ -1467,10 +1512,14 @@ begin
          end if;
          if (matrix02_ld = '1') then
             matCode(2) <= std_logic_vector(to_unsigned(matrix02_c, 2));
+            if (matrix02_c = 3) then matCode(2) <= "00"; end if;   -- RT13 for rows 1 / 2 of the garbage matrix
             if (matrix02_c = 3) then matrix3_02 <= REG_IR0; end if;
          end if;
          if (matrix10_ld = '1') then matCode(3) <= std_logic_vector(to_unsigned(matrix10_c, 2)); end if;
-         if (matrix11_ld = '1') then matCode(4) <= std_logic_vector(to_unsigned(matrix11_c, 2)); end if;
+         if (matrix11_ld = '1') then
+            matCode(4) <= std_logic_vector(to_unsigned(matrix11_c, 2));
+            if (matrix11_c = 3) then matCode(4) <= "00"; end if;   -- RT22 for row 2 of the garbage matrix
+         end if;
          if (matrix12_ld = '1') then matCode(5) <= std_logic_vector(to_unsigned(matrix12_c, 2)); end if;
          if (matrix20_ld = '1') then matCode(6) <= std_logic_vector(to_unsigned(matrix20_c, 2)); end if;
          if (matrix21_ld = '1') then matCode(7) <= std_logic_vector(to_unsigned(matrix21_c, 2)); end if;
@@ -1530,14 +1579,14 @@ begin
                when 1 => mac0_v2 := resize(REG_SY1,18);
                when 2 => mac0_v2 := resize(REG_SY2,18);
                when 3 => mac0_v2 := resize(REG_SY0,18);
-               when 4 => mac0_v2 := resize(REG_ZSF3,18);
-               when 5 => mac0_v2 := resize(REG_ZSF4,18);
+               when 4 => mac0_v2 := resize(ofVal(15 downto 0),18);  -- ZSF3 (ofCode 5)
+               when 5 => mac0_v2 := resize(ofVal(15 downto 0),18);  -- ZSF4 (ofCode 6)
                when others => null;
             end case;
             case (mac0_c3) is
-               when 0 => mac0_v3 := signed(REG_OFX);
-               when 1 => mac0_v3 := signed(REG_OFY);
-               when 2 => mac0_v3 := signed(REG_DQB);
+               when 0 => mac0_v3 := ofVal;  -- OFX (ofCode 0)
+               when 1 => mac0_v3 := ofVal;  -- OFY (ofCode 1)
+               when 2 => mac0_v3 := ofVal;  -- DQB (ofCode 4)
                when 3 => mac0_v3 := x"00000000";
                when others => null;
             end case;
@@ -1545,7 +1594,7 @@ begin
          end if;
          if (mac1_mode /= 0) then
             case (mac1_cadd) is
-               when 0 => mac1_vadd := resize(signed(REG_TR0), 33) & x"000";
+               when 0 => mac1_vadd := resize(translate0, 33) & x"000";  -- TR (trCode 0)
                when 1 => mac1_vadd := to_signed(0, 45);
                when 2 => mac1_vadd := mac1Last;
                when others => null;
@@ -1576,10 +1625,10 @@ begin
          elsif (mac1_mode = 2) then
             case (mac1_cv) is
                when 0 => mac1_vv := resize(signed(x"000000" & calcColor( 7 downto  0)), 32);
-               when 1 => mac1_vv := resize(signed(REG_FC0), 32);
+               when 1 => mac1_vv := resize(translate0, 32);  -- FC (trCode 2)
                when 2 => mac1_vv := resize(resize(REG_IR1, 32), 32);
                when 3 => mac1_vv := resize(translate0, 32);
-               when 4 => mac1_vv := resize(signed(REG_BK0), 32);
+               when 4 => mac1_vv := resize(translate0, 32);  -- BK (trCode 1)
                when 5 => mac1_vv := resize(mac1_result, 32);
                when 6 => mac1_vv := resize(REG_MAC1, 32);
                when others => null;
@@ -1595,7 +1644,7 @@ begin
          end if;
          if (mac2_mode /= 0) then
             case (mac2_cadd) is
-               when 0 => mac2_vadd := resize(signed(REG_TR1), 33) & x"000";
+               when 0 => mac2_vadd := resize(translate1, 33) & x"000";  -- TR (trCode 0)
                when 1 => mac2_vadd := to_signed(0, 45);
                when 2 => mac2_vadd := mac2Last;
                when others => null;
@@ -1626,10 +1675,10 @@ begin
          elsif (mac2_mode = 2) then
             case (mac2_cv) is
                when 0 => mac2_vv := resize(signed(x"000000" & calcColor(15 downto  8)), 32);
-               when 1 => mac2_vv := resize(signed(REG_FC1), 32);
+               when 1 => mac2_vv := resize(translate1, 32);  -- FC (trCode 2)
                when 2 => mac2_vv := resize(resize(REG_IR2, 32), 32);
                when 3 => mac2_vv := resize(translate1, 32);
-               when 4 => mac2_vv := resize(signed(REG_BK1), 32);
+               when 4 => mac2_vv := resize(translate1, 32);  -- BK (trCode 1)
                when 5 => mac2_vv := resize(mac2_result, 32);
                when 6 => mac2_vv := resize(REG_MAC2, 32);
                when others => null;
@@ -1645,7 +1694,7 @@ begin
          end if;
          if (mac3_mode /= 0) then
             case (mac3_cadd) is
-               when 0 => mac3_vadd := resize(signed(REG_TR2), 33) & x"000";
+               when 0 => mac3_vadd := resize(translate2, 33) & x"000";  -- TR (trCode 0)
                when 1 => mac3_vadd := to_signed(0, 45);
                when 2 => mac3_vadd := mac3Last;
                when others => null;
@@ -1676,10 +1725,10 @@ begin
          elsif (mac3_mode = 2) then
             case (mac3_cv) is
                when 0 => mac3_vv := resize(signed(x"000000" & calcColor(23 downto 16)), 32);
-               when 1 => mac3_vv := resize(signed(REG_FC2), 32);
+               when 1 => mac3_vv := resize(translate2, 32);  -- FC (trCode 2)
                when 2 => mac3_vv := resize(resize(REG_IR3, 32), 32);
                when 3 => mac3_vv := resize(translate2, 32);
-               when 4 => mac3_vv := resize(signed(REG_BK2), 32);
+               when 4 => mac3_vv := resize(translate2, 32);  -- BK (trCode 1)
                when 5 => mac3_vv := resize(mac3_result, 32);
                when 6 => mac3_vv := resize(REG_MAC3, 32);
                when others => null;
@@ -1747,7 +1796,7 @@ begin
             -- push sz and start divide
             if (pushSZandDivide = '1') then
                div_trigger <= '1';
-               div_lhs     <= unsigned(REG_H);
+               div_lhs     <= unsigned(ofVal(15 downto 0));  -- H (ofCode 2)
                if (mac3Shifted < 0) then
                   REG_FLAG(18) <= '1'; REG_FLAG(31) <= '1';
                   REG_SZ3      <= x"0000";

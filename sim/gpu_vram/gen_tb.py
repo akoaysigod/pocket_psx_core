@@ -21,9 +21,17 @@ def tie(t):
     if t.startswith('std_logic_vector') or t.startswith('unsigned') or t.startswith('signed'): return '(others => \'0\')'
     if t.startswith('std_logic'): return "'0'"
     return '(others => \'0\')'
+# ports of the reference entity (argv[4], optional): the reference instance only maps the ports it has
+# (the current gpu.vhd has outputs that upstream does not, e.g. debug_gpu)
+refports = None
+if len(sys.argv) > 4:
+    rsrc = open(sys.argv[4]).read()
+    rent = re.search(r'entity \w+ is.*?port\s*\((.*?)\);\s*end entity', rsrc, re.S).group(1)
+    refports = set(m.group(1).lower() for m in (re.match(r'\s*(\w+)\s*:\s*(in|out|inout)\s', l) for l in rent.split('\n')) if m)
 def inst(i, name):
     lines = []
     for n, d, t in ports:
+        if i == 0 and refports is not None and n.lower() not in refports: continue
         if d == 'in':
             v = DRIVE.get(n, tie(t))
             if '%d' in v: v = v % i

@@ -15,7 +15,7 @@ for m in poly line; do
 done
 # simulation only: to_unsigned(lineMax - 1) is evaluated with lineMax = 0 right after reset; hardware wraps to 511
 python3 "$here/wrap_to_unsigned.py" "$rtl/gpu_videoout_async.vhd" "$work/gpu_videoout_async.vhd"
-python3 "$here/gen_tb.py" "$rtl" "$here/tb_gpu_vram.tpl.vhd" "$work/tb_gpu_vram.vhd"
+python3 "$here/gen_tb.py" "$rtl" "$here/tb_gpu_vram.tpl.vhd" "$work/tb_gpu_vram.vhd" "$work/gpu_ref.vhd"
 cd "$work"
 L="-L . -L ${ALTERA_MF_DIR:-.}"
 nvc --std=2008 $L --work=mem -a "$rtl/RamMLAB.vhd" "$rtl/SyncFifo.vhd" "$rtl/SyncFifoFallThrough.vhd" "$rtl/dpram.vhd"

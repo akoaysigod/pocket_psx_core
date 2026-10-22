@@ -249,6 +249,16 @@ architecture arch of psx_top is
    -- Pocket: one memory card slot only. With no card 2 (available/load/mounted = '0') slot 2 never leaves
    -- IDLE (sim/memcard2_off), so its memcard instance is removed and its outputs tied inactive.
    constant MEMCARD2_ON : boolean := false;
+   -- Pocket: memory card 1 is loaded into / saved from PSRAM by pocket_memcard (aux port), not by the HPS
+   -- transfer of memcard.vhd: its load / save inputs are tied to '0', so it never leaves IDLE (never pauses,
+   -- never requests DDR3); the instance is removed and its outputs tied to those values. changePending
+   -- (memcard_changed) is not used on the Pocket.
+   constant MEMCARD1_HPS_ON : boolean := false;
+   -- Pocket: SPU RAM is in SDRAM (SPUSDRAM = '1'). The SPU's DDR3 port then never requests: its write
+   -- fifo is only written and its cache fetch only started when useSDRAM = '0'. Tying the request to '0'
+   -- lets synthesis remove that port and the arbiter's SPU input (spu_ram asserts it in simulation).
+   constant SPU_DDR3_ON : boolean := false;
+   signal memSPU_request_spu     : std_logic;
 
    signal reset_in               : std_logic := '0';
    signal reset_intern           : std_logic := '0';
@@ -1699,7 +1709,7 @@ begin
       sdram_ena            => spuram_ena,           
       sdram_done           => spuram_done,
       
-      mem_request          => memSPU_request,  
+      mem_request          => memSPU_request_spu,  
       mem_BURSTCNT         => memSPU_BURSTCNT, 
       mem_ADDR             => memSPU_ADDR,     
       mem_DIN              => memSPU_DIN,      
@@ -2026,6 +2036,10 @@ begin
    memcard_changed <= MemCard_changePending1 or MemCard_changePending2;
    saving_memcard  <= MemCard_saving_memcard1 or MemCard_saving_memcard2;
    
+   memSPU_request <= memSPU_request_spu when SPU_DDR3_ON else '0';
+
+   gmemcard1 : if MEMCARD1_HPS_ON generate
+   begin
    imemcard1 : entity work.memcard
    port map
    (
@@ -2065,6 +2079,28 @@ begin
       memcard_dataIn       => memcard1_dataIn, 
       memcard_dataOut      => memcard1_dataOut
    );
+   end generate;
+
+   gmemcard1off : if not MEMCARD1_HPS_ON generate
+   begin
+      memcard1_pause          <= '0';
+      MemCard_changePending1  <= '0';
+      MemCard_saving_memcard1 <= '0';
+      memHPScard1_request     <= '0';
+      memHPScard1_BURSTCNT    <= (others => '0');
+      memHPScard1_ADDR        <= (others => '0');
+      memHPScard1_DIN         <= (others => '0');
+      memHPScard1_BE          <= (others => '0');
+      memHPScard1_WE          <= '0';
+      memHPScard1_RD          <= '0';
+      memcard1_rd             <= '0';
+      memcard1_wr             <= '0';
+      memcard1_lba            <= (others => '0');
+      memcard1_dataOut        <= (others => '0');
+      -- synthesis translate_off
+      assert (memcard1_load /= '1' and memcard_save /= '1') report "psx_top: memory card 1 HPS load/save is not supported (MEMCARD1_HPS_ON)" severity failure;
+      -- synthesis translate_on
+   end generate;
    
    gmemcard2 : if MEMCARD2_ON generate
    begin

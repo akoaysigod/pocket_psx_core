@@ -169,6 +169,11 @@ architecture arch of gpu_poly is
    type tworkVertexArray is array(0 to 2) of tVertex;
    signal vt                  : tworkVertexArray;
    signal coreVertex          : integer range 0 to 2;
+   -- Pocket (timing): -x / -y of the core vertex, registered in CALCBOUNDARY2 (coreVertex and vt are fixed from
+   -- then on; the 32-bit multiplier only uses them later, in CALCCOLOR4 / CALCTEXTURE4), so the vertex
+   -- multiplexer and the negation are no longer in front of the multiplier
+   signal coreNegX            : signed(12 downto 0) := (others => '0');
+   signal coreNegY            : signed(12 downto 0) := (others => '0');
    signal vo                  : integer range 0 to 1;
    signal vp                  : integer range 0 to 1;
    signal denom               : integer range -16777216 to 16777215;
@@ -359,16 +364,16 @@ begin
              dyG when (mulStep = 4) else 
              dyB;
              
-   mulIn2 <= unsigned(to_signed(-vt(coreVertex).x, 32)) when (state = CALCTEXTURE4 and mulStep = 0) else
-             unsigned(to_signed(-vt(coreVertex).x, 32)) when (state = CALCTEXTURE4 and mulStep = 1) else
-             unsigned(to_signed(-vt(coreVertex).y, 32)) when (state = CALCTEXTURE4 and mulStep = 2) else
-             unsigned(to_signed(-vt(coreVertex).y, 32)) when (state = CALCTEXTURE4 and mulStep = 3) else
-             unsigned(to_signed(-vt(coreVertex).x, 32)) when (mulStep = 0) else 
-             unsigned(to_signed(-vt(coreVertex).x, 32)) when (mulStep = 1) else 
-             unsigned(to_signed(-vt(coreVertex).x, 32)) when (mulStep = 2) else 
-             unsigned(to_signed(-vt(coreVertex).y, 32)) when (mulStep = 3) else 
-             unsigned(to_signed(-vt(coreVertex).y, 32)) when (mulStep = 4) else 
-             unsigned(to_signed(-vt(coreVertex).y, 32));
+   mulIn2 <= unsigned(resize(coreNegX, 32)) when (state = CALCTEXTURE4 and mulStep = 0) else
+             unsigned(resize(coreNegX, 32)) when (state = CALCTEXTURE4 and mulStep = 1) else
+             unsigned(resize(coreNegY, 32)) when (state = CALCTEXTURE4 and mulStep = 2) else
+             unsigned(resize(coreNegY, 32)) when (state = CALCTEXTURE4 and mulStep = 3) else
+             unsigned(resize(coreNegX, 32)) when (mulStep = 0) else 
+             unsigned(resize(coreNegX, 32)) when (mulStep = 1) else 
+             unsigned(resize(coreNegX, 32)) when (mulStep = 2) else 
+             unsigned(resize(coreNegY, 32)) when (mulStep = 3) else 
+             unsigned(resize(coreNegY, 32)) when (mulStep = 4) else 
+             unsigned(resize(coreNegY, 32));
    
    process (clk2x)
       variable xrec12   : signed(11 downto 0);
@@ -793,6 +798,9 @@ begin
                   
                   vo_diff_base <= resize(vo_diff * baseStep, 45);
                   vp_diff_base <= resize(vp_diff * baseStep, 45);
+                  
+                  coreNegX <= to_signed(-vt(coreVertex).x, 13);
+                  coreNegY <= to_signed(-vt(coreVertex).y, 13);
                   
                   base_R <= x"000" & vt(coreVertex).r & x"800";
                   base_G <= x"000" & vt(coreVertex).g & x"800";

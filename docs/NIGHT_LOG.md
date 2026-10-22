@@ -737,3 +737,170 @@ clk2x -0.47 (85C) / -0.98 (0C): still only the GPU VRAM wrap-length path (gpu.vh
   (slow 0C clk2x), worst hold +0.038 (fast 0C clk1x), video clocks hold >= +0.163; m10kn_clocks as in cc_s1
   (clk1x / clk2x only). -> releases/akoaysigod.PSX_0.1.4_vdes1.zip, for the hardware test.
 - GPU area study in docs/gpu_space.md (no change adopted).
+
+## 2026-10-18/19: area / timing pass over every module (worktree ../sotn-opus, branch sotn-opus from main bff6cb6)
+- Goal: fewer ALMs (easier fits, room for features) without changing what the core does. Every change was checked
+  in simulation against the version before it (or upstream), with deliberate mutations to show the test notices
+  errors, and measured with a MAPONLY build of the same tree (ALUTs / registers of the changed module; the chip-wide
+  ALM estimate moves by +-50 from synthesis noise in untouched modules, so it is only given for totals).
+- Baseline: main bff6cb6, MAPONLY op_base_map: ALM estimate 17,962. Its fit vdes1: 18,257 ALMs, 1,848 / 1,848 LABs,
+  254 M10K, 55 DSP, with 2,418 ALMs holding only registers and 2,003 LUTs used as route-throughs to registers: removed
+  flip-flops count, not only LUTs.
+
+| # | Step | Validation | Result (synthesis, changed module) |
+|---|---|---|---|
+| 1 | SPU: one ADSR tick/step calculator instead of five (all five phases were computed every clock, each reader uses one) | sim/spu_equiv vs upstream, 2M cycles seeds 1-2 PASS; 2 mutations caught | SPU -146 ALUTs, -89 registers |
+| 2 | memctrl: CPU readback from a 16 x 32 RAM copy, flip-flops only for the bits the core uses | new sim/memctrl vs upstream, 1M cycles seeds 1-3 PASS; 3 mutations caught | -54 ALUTs, -214 registers, +1 M10K |
+| 3 | cd_xa: XA ring buffer as one explicit M10K (the inferred arrays had 54 read-during-write bypass registers) | new sim/cd_xa vs upstream, 5M cycles seeds 1-3 PASS; 2 mutations caught (1 equivalent) | -8 ALUTs, -69 registers |
+| 4 | psx_top: memory card 1 HPS path (memcard.vhd, never starts: load / save tied '0' by pocket_psx; saves go through pocket_memcard) and SPU DDR3 port (never requests with SPU RAM in SDRAM) removed; DDR3 arbiter loses two inputs | spu_ram assertion + sim/spu_equiv 2M seeds 1-2 PASS; memcard: inputs tied (code argument) | psx_top own 242 -> 82 ALUTs, spu_ram -36 / -111 registers, memcard -32 / -98 registers, -7 M10K |
+| 5 | joypad_pad: DualShock / NeGcon configuration logic unreachable (command set only when the pad answers; DS_NEGCON_ON constant) | new sim/joypad_pad vs upstream, 2M seeds 1-3 PASS (Pocket pad), part 1 with all pad types PASS; 2 mutations caught | 259 -> 108 ALUTs, -75 registers |
+| 6 | GTE MACs: `mac_result` / `macShifted` taken from `macResult_1` with a registered select instead of separate registered copies | sim/gte_small (vs gte.vhd) 20,000 commands seeds 1-2 PASS; mutation caught (8,245 register mismatches) | GTE -33 ALUTs, -95 registers |
+| 7 | gpu_poly (timing): -x / -y of the core vertex registered in CALCBOUNDARY2, so the vertex mux and the negation are no longer in front of the 32-bit multiplier (vdes1's worst clk2x path, +0.014 ns) | sim/gpu_div3 poly 300 commands seeds 1-3 PASS; mutation caught | gpu_poly -84..-90 ALUTs, +26 registers |
+| 8 | gte_small: end of every command from one `lastStep(state)` table instead of a branch per command | sim/gte_small 20,000 seeds 1-2 PASS; 2 mutations caught (1 equivalent: busy only drops on clk2xIndex 0) | GTE -54 ALUTs |
+| 9 | joypad_pad: the DualShock / NeGcon dispatch gated with `DS_NEGCON_ON` too, so synthesis always removes the rumble configuration (it did in some builds only: same source, 108 or 199 ALUTs) | sim/joypad_pad 2M seeds 1-3 PASS; mutation caught | stable at the small result (up to -91 ALUTs, -52 registers) |
+| 10 | dma: D_MADR / D_BCR RAM write address / data default to the CPU write (they only matter with the write enable) | sim/dma_equiv REALISTIC 2M seeds 1-2 PASS; mutation caught (887,540 mismatch cycles) | write-data muxes gone; chip -12 ALUTs (noise level) |
+| 11 | gte_small: TR / BK / FC read from the translation M10K that MVMVA already used (trCode set per command, switched inside NCDS / NCDT and CDP); 288 flip-flop copies removed | sim/gte_small 20,000 seeds 1-2 PASS; 2 mutations caught | GTE -288 registers, -2 ALUTs |
+| 12 | gte_small: OFX / OFY / H / DQB / ZSF3 / ZSF4 from one small M10K (ofCode set one step before each use) | sim/gte_small 20,000 seeds 1-2 PASS; 2 mutations caught | GTE -141 registers, -26 ALUTs, +1 M10K |
+| 13 | pocket/sim/boot: nvc 1.23 needs `-M 256m` to elaborate tb_boot (failed on main too). Dropped in the rebase below: main f0300d8 has `-M 64m` | test infrastructure | - |
+| 14 | gte_small: LZCS (only read back by the CPU) from the shadow RAM | sim/gte_small 20,000 seeds 1-2 PASS; mutation caught | GTE -32 registers |
+| 15 | gte_small: MVMVA garbage matrix (MX = 3) rows from the RT matrix MLABs of elements 2 / 4, RT13 / RT22 flip-flops removed | sim/gte_small 20,000 seeds 1-4 PASS; 2 mutations caught | GTE -32 registers |
+| 16 | sim/gpu_vram: the reference instance only maps the ports the reference has (rtl/gpu.vhd's debug_gpu output broke the test on main) | test infrastructure | - |
+| 17 | gte_small (timing): the falling-edge M10Ks (translation RAMs, OF RAM) write from registered copies of the CPU write; the write enable decoded from the CPU's clk1x signals had half a clk2x cycle (+0.244 ns in op_fit4_s1, **-0.821 ns** in fin_s1) | sim/gte_small 20,000 seeds 1-2 PASS; mutation caught (26,711 register mismatches) | +42 registers |
+
+- Measuring: after #5 (op_pad2) the ALM estimate was 17,962 -> 17,500, after #6 17,439; after that it stops being a
+  useful measure (two builds that differ only in gpu_poly and gte_small moved CPU +90..109 and DMA +61 ALUTs, with no
+  source or register change). The synthesis report's "Multiplexer Restructuring Statistics" overstate savings (the
+  DMA write-data muxes, 244 LEs there, were worth 12 ALUTs). Register counts are the reliable measure; ALUT counts
+  per module move by up to +-100 between builds without a source change.
+- Result, seed 1, vdes1 (main) -> fix_s1 (76cc7cf, #1-#17): 18,257 -> **17,528 ALMs** (-729), LABs 1,848 -> 1,847,
+  combinational ALUTs 27,932 -> 27,322, registers 21,746 -> **20,738** (-1,008), M10K 254 -> 249, DSP 55. Synthesis
+  ALM estimate / ALUTs / registers 17,962 / 27,770 / 21,466 -> 17,398 / 27,162 / 20,283. Worst setup +0.014 ->
+  +0.333 ns. Fitted ALMs per module: psx_top 16,644 -> 15,969: GTE 2,561 -> 2,285, SPU 2,297 -> 2,135, GPU 4,797 ->
+  4,655 (gpu_poly -52), memctrl 146 -> 65, joypad_pad 142 -> 65, memcard.vhd (card 1 HPS) gone; CPU / DMA / CD /
+  MDEC / memorymux +12..+38 each with no (or a trivial) source change: the fitter spreading the smaller design.
+- "ALMs needed" = placed - recoverable by dense packing + unavailable: the ALMs the fitter would free by packing
+  tighter are already subtracted, not extra room. With room to spare the fitter spreads the design (it places
+  ~17,900 ALMs and lists ~730 as recoverable; vdes1: 241) and packs tighter by itself when the design grows. ALMs
+  needed stayed near 17,500 while registers kept falling; whether the dense-packing estimate is conservative is not
+  proven. Headroom by the fitter's own estimate: 18,480 - 17,528.
+
+| build | RTL | ALMs needed | placed | recoverable | LABs | registers | worst setup / hold (ns) |
+|---|---|---:|---:|---:|---:|---:|---|
+| vdes1 (main, seed 1) | bff6cb6 | 18,257 | 18,175 | 241 | 1,848 | 21,746 | +0.014 / +0.038 |
+| op_fit3_s1 | be5fac8 (#1-#7) | 17,557 | 17,930 | 735 | 1,840 | 21,168 | +0.440 / +0.004 |
+| op_fit4_s1 | 1312160 (#1-#11) | 17,562 | 17,958 | 750 | 1,848 | 20,875 | +0.244 / +0.022 |
+| op_fit5_s1 | 2c02015 (#1-#12) | 17,570 | 17,910 | 711 | 1,845 | 20,798 | +0.657 / **-0.030** |
+| op_fit5_s2 | 38f7a68 (+ #14, dAPF) | 17,464 | | | 1,847 | | +0.002 / +0.001 |
+| op_fit5_s3 | 38f7a68 | | | | 1,847 | | **-0.330** (clk1x cpuPaused -> SDRAM_A, clk3x) / **-0.077** (gpu_poly yCoord -> lineY) |
+| fin_s1 | 2b407e1 (#1-#16) | 17,505 | | | 1,845 | | **-0.821** (GTE translation RAM write enable, see #17) / -0.031 |
+| fin_s2 | 2b407e1 (#1-#16) | 17,527 | | | 1,843 | | +0.353 / +0.024 (clean) |
+| fix_s1 | 76cc7cf (#1-#17) | 17,528 | 17,905 | 732 | 1,847 | 20,738 | +0.333 / +0.023 (clean; no setup path below 0.3 ns, no GTE RAM write path in the list) |
+| fix_s2 | 76cc7cf | 17,529 | | | 1,843 | | +0.484 / -0.033 (clk_74a pocket_memcard fifo_data -> dcfifo RAM; clk1x mdec currentData -> calcData) |
+| fix_s3 | 76cc7cf | 17,539 | | | 1,846 | | +0.405 / -0.034 (sdram ch1_dout -> dma_data, clk3x -> clk1x) |
+| fix_s4 | 76cc7cf | 17,558 | | | 1,844 | | +0.764 / -0.021 (clk_74a), -0.009 (clk3x) |
+| fix_s5 | 76cc7cf | 17,548 | | | 1,846 | | +0.771 / -0.010 (clk3x), -0.008 (clk1x) |
+| fix_s6 | 76cc7cf | 17,541 | | | 1,843 | | +0.477 / +0.005 (clean) |
+| main_s2 | bff6cb6 (main) | 18,271 | | | 1,848 | | +0.593 / -0.007 (clk3x) |
+| main_s3 | bff6cb6 (main) | 18,269 | | | 1,848 | | +0.543 / -0.002 (clk1x) |
+| hold_s2 / hold_s3 | 76cc7cf + fitter-only hold margin (below) | 17,529 / | | | 1,843 / | | +0.406 / 0.000; +0.640 / -0.029 |
+| fix_s2_std | 76cc7cf, seed 2, FITTER_EFFORT "STANDARD FIT" | 17,523 | | | 1,848 | | +0.474 / -0.008 (clk3x); 17 min (seed 2 Auto Fit: 22 min while another fit ran) |
+
+- Timing: setup has margin in every fit of the final RTL (+0.333 ns or more; vdes1's gpu_poly path is gone since
+  #7). Two timing problems found tonight were fixed (#7, #17), one change was reverted for timing (dAPF, below).
+  Fast-corner (0C) hold is the weak point, on main as well: worst hold main +0.038 / -0.007 / -0.002 ns (seeds 1-3),
+  final +0.023 / -0.033 / -0.034 / -0.021 / -0.010 / +0.005 ns (seeds 1-6). The failing paths are always in logic
+  not changed tonight (pocket_memcard's load FIFO on clk_74a, sdram ch1_dout -> dma_data clk3x -> clk1x, MDEC, SPU
+  ADPCM RAM, gpu_poly yCoord -> lineY); ~25 ps worse on average, most likely placement (the fitter spreads the
+  smaller design). Seed selection is still needed (pk20 needed seed 7 of 1-8): fix_s1 and fix_s6 meet every corner.
+- Recommendation (not applied): the SDRAM hand-off sdram|ch1_dout -> sdram|dma_data (clk3x -> clk1x) is one of the
+  recurring hold misses. dma_data copies a 32-bit slice only on the clk1x edges after dma_done (bit 6 of the burst),
+  one slice per edge; each slice was written at least one clk3x before the edge that copies it, and a following
+  burst (even back to back) reaches that slice only after it was copied; on all other edges the load multiplexer
+  does not select it. So the same-edge hold check looks false for this path, and a hold-only exception
+  (set_false_path -hold -from {*sdram:isdram|ch1_dout[*]} -to {*sdram:isdram|dma_data[*]}) would remove it. It is a
+  constraint on a hardware-critical path, so it is left for review. Re-analysis of fix_s3 (which missed hold only on
+  this path, -0.034 ns) with that exception added (quartus_sta: read_sdc, then the set_false_path above): worst hold
+  +0.010 ns, i.e. the seed would be clean.
+- Experiment, not kept: extra hold margin for the fitter only (core_constraints.sdc,
+  `if {$::quartus(nameofexecutable) eq "quartus_fit"} { set_clock_uncertainty -add -hold -enable_same_physical_edge
+  ... 0.050 }`; sign-off unchanged). The fitter then adds ~50 % more hold delay (3,442 vs 2,309 ns in total): seed 2
+  -0.033 -> 0.000 ns (setup +0.484 -> +0.406), seed 3 -0.034 -> -0.029 ns (the SDRAM hand-off above). Helps some
+  seeds, not a cure.
+- Tried, not kept:
+  - SPU dAPF1 / dAPF2 from the reverb coefficient RAM copy (-32 registers, spu_equiv PASS, mutation caught):
+    reverted. It made the reverb request address the difference of two half-cycle (falling-edge M10K) reads; in
+    op_fit5_s2 the new path irvCoef -> ram_Adr had +0.002 ns (clk1x, slow 0C), and the one-RAM version of that path
+    already failed in some placements (sdA_s1, -0.418 ns).
+  - GTE input vectors V0-V2 from two M10Ks (the vector latches stay only for the IR vector): -142 registers but
+    +51 ALUTs and +2 M10K, and the vectors would reach the multiplier inputs in half a clk2x cycle from a
+    falling-edge M10K (the matrix-RAM attempt of 2026-10-14/15 failed timing on that kind of path). Tests passed;
+    reverted.
+  - GTE command sequencing as a ROM: the per-step control word is ~170 bits (three MACs x 10 flags, matrix /
+    vector loads), 22 commands x 42 steps -> about 34 M10K flat, or a two-level ROM with two clocks of lookahead.
+    Not attempted.
+  - SPU reverb input low-pass as four cascaded pairwise sums (exact, narrower adders): +30 ALUTs, -31 registers;
+    Quartus already packs the original sums into 3-input adder chains. Reverted.
+  - GPU / CPU dividers: the GPU reads the quotient one clock before `done` (stale bit 0), so the bit order must
+    stay; no cheap cycle-exact saving.
+- Tests on the final RTL: cd_arith, cd_cdda, cd_xa (2M seed 4), cpu_mul, fifo_m10k, gpu_div3 poly / line (300,
+  seed 4), gte_small (20,000, seeds 3, 4), joypad_pad (2M seed 4), mdec_black, memcard2_off, memctrl (1M seed 4),
+  ram_m10kn, savestates_reset, spu_equiv (1M seed 3), validbits256, pocket_buttons, pocket_cd, pocket_diag,
+  pocket_memcard, pocket_video, video_chain, vram_psram: all PASS. dma_equiv: seed 7 stops on the known stimulus
+  limit (requestedDwords overflow, in the reference and the new DMA at the same clock); seed 2 1M PASS. sim/sdram:
+  gap 2 (the documented configuration) 20 ms PASS, lockstep 0 differences; the default gap 1 shows the known
+  cache-line race identically in both controllers (21 / 21 errors, lockstep 0). gpu_vram: broken on main
+  (debug_gpu port), fixed (#16): seed 7 10 commands and seed 8 15 commands PASS with the same read-burst / wrap
+  counts as in the pk3 / pk4 entry (29 / 56 bursts, 4 / 8 wrapping; 300 commands, the script default, does not
+  finish in hours).
+- System level: pocket/sim/boot 400 ms (real BIOS, reset sequence, BIOS start): the logs of main, ad1f67c (#1-#10),
+  2b407e1 (#1-#16) and 76cc7cf (#1-#17) are identical (PC samples, VRAM / SPU traffic, frame count). 1.4 s with
+  FAST_SHELL (BIOS intro: GPU drawing, DMA, SPU sound, interlace, display on) of main and 2b407e1: all 47 status
+  lines identical (at 1,387 ms: 73 frames, the first non-black one, 558,258 VRAM writes, 14,996 DMA words, 32.7M
+  sound samples) and the frame dumps (frames 20 / 40 / 60) byte-identical. #17 only delays RAM writes nobody can
+  observe; its 400 ms boot is identical too.
+- Module by module, what was looked at:
+
+| Module (fit ALMs, main) | Done | Looked at, left as is (why) |
+|---|---|---|
+| GPU 4,655 (gpu_poly 1,975) | #7 (timing) | gpu.vhd / gpu_line / pixelpipeline / dividers: see docs/gpu_space.md (2026-10-17), items there change drawing latency; dividers: quotient read one clock before `done` |
+| GTE 2,457 | #6 #8 #11 #12 #14 #15 #17 (-555 registers in synthesis) | V0-V2 in RAM (timing, reverted); sequencer ROM (~34 M10K); readback mux is at the floor for 24 live registers; DQA (read with DQB) |
+| SPU 2,119 | #1 | reverb low-pass cascade (worse); dAPF from RAM (timing, reverted); volumes / IRQ address / KEYON etc. are read every sample |
+| CD 2,018 (cd_xa 366) | #3 | workDelay mux (14 assignments in a 142-way case, test covers few commands); subdata copy (bytes of nextSubdata are read in parallel); ss_timeout (reset sequence). The controller was replaced by the CD engine on main since (f0300d8, docs/cd_engine.md) |
+| CPU 1,962 | - | shared ALU adder (prototype -25 ALUTs, dropped); resultData mux (no CPU equivalence test); multiplier operands (33x33 split over 3 DSPs, registers cannot move into them) |
+| DMA 877 | #10 | GPU / MDEC write data sharing (outputs compared per clock by the test) |
+| memorymux 576 | - | saved write data of a read (32 FFs: every peripheral would have to ignore dataWrite on reads; no test) |
+| MDEC 555 | - | tables already in RAM, the rest is the IDCT datapath (DSP) |
+| joypad 281 | #5 #9 | joypad_mem 64-bit copies on the save path (no transaction-level test; saves are hardware-verified) |
+| savestates 163 | - | already reset-only (savestates_reset.vhd); SS write enables are already masked |
+| timer 143, irq 37, sio 34 | - | small, all live |
+| memctrl 67 | #2 | - |
+| psx_top | #4 | DDR3 arbiter_DIN (only card 1 left; a copy of joypad_mem's held data, but on the save path) |
+| sdram 283, vram_psram 281, pocket_cd 277, pocket_memcard 128 | - | sdram: the 128-bit burst buffer is needed (DMA drains 1 word per clk1x); pocket_cd: sequential divider already; core_bridge_cmd (Analogue) |
+
+## 2026-10-19/20: sotn-opus rebased onto main f0300d8 (CD controller engine, SPU CD queue, audio48, read-ahead)
+- Rebased from bff6cb6 onto f0300d8; the previous tip is kept as branch sotn-opus-prerebase. None of the changes
+  above touches the CD controller (cd_top / cd_ctrl / cd_engine), only the XA ring in cd_xa.vhd (#3), so the two
+  sets of savings are separate. spu.vhd (CD queue vs. ADSR calculator, #1) and psx_top.vhd (sound_valid vs. #4)
+  merged without conflicts; #13 dropped (main has -M 64m).
+- Seed 1, main f0300d8 (main_f0300d8_s1, the same sources) -> rebased (rb_s1, 4f8c7d7): **18,187 -> 17,362 ALMs**
+  (-825; 98 % -> 94 %), placed 18,183 -> 17,974, recoverable by dense packing 278 -> 910 (already subtracted),
+  combinational ALUTs 27,485 -> 26,829, registers 22,080 -> 21,360 (-720), M10K 278 -> 273, DSP 57. Worst setup /
+  hold +0.326 / -0.089 -> +0.747 / -0.025 ns. Fitted ALMs per module: GTE 2,522 -> 2,301, SPU 2,329 -> 2,206, joypad
+  352 -> 252, memctrl 155 -> 67, GPU 4,743 -> 4,667, pocket_memcard 145 -> 108, memcard.vhd 19 -> 0; cd_top 1,561 ->
+  1,547. Headroom by the fitter's estimate: 18,480 - 17,362 = 1,118 ALMs (main: 293).
+
+| Seed (builds/snap_rb) | ALMs needed | Worst setup | Worst hold | Failing paths |
+|---|---:|---:|---:|---|
+| rb_s1 | 17,362 | +0.747 | -0.025 | gpu GPUSTAT_DrawPixelsMask -> bus_dataRead[12] (clk2x -> clk1x) |
+| rb_s2 | 17,406 | +0.726 | -0.075 | joypad_mem mem_DataInB -> memory card sector buffer M10K (clk2x) |
+| rb_s3 | 17,402 | +0.463 | -0.030 | gpu GPUSTAT_DrawPixelsMask -> bus_dataRead[12] |
+| rb_s4 | 17,422 | -0.182 | +0.058 | setup: sdram refresh_due -> SDRAM_A[11] (clk3x) |
+| rb_s5 | 17,371 | +0.803 | -0.102 | gpu_poly yCoord -> lineY / its multiplier (clk2x) |
+| rb_s6 | 17,406 | +0.416 | **+0.001** | none: meets every corner |
+
+- All failing paths are in logic neither branch changed; main misses hold on its seed 1 as well. rb_s6 is the
+  bitstream for the hardware test.
+- Tests on the rebased tree: every test of the 2026-10-18/19 entry passes again, plus main's new ones:
+  sim/cd_equiv FREEZE scripts 0-3 (boot, SotN-like + XA, CD audio, random commands seed 4 x 200): 0 mismatches;
+  sim/spu_timing (LAT 5 +0..3 and LAT 30 +0..10): output identical to main's spu.vhd; pocket/sim/pocket_cd (with
+  the read-ahead) PASS. pocket/sim/boot 400 ms: log identical to main f0300d8's.
