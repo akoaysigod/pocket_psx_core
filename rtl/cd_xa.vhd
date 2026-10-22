@@ -5,6 +5,9 @@ use STD.textio.all;
 
 library mem;
 
+library altera_mf;
+use altera_mf.altera_mf_components.all;
+
 entity cd_xa is
    port 
    (
@@ -111,9 +114,15 @@ architecture arch of cd_xa is
    );
    signal ResampleState       : tResampleState := RESAMPLE_IDLE;
    
-   type tXaRingBuffer is array(0 to 31) of signed(15 downto 0);
-   signal XaRingBufferL       : tXaRingBuffer;
-   signal XaRingBufferR       : tXaRingBuffer;
+   -- Pocket: the ring buffer is one 32 x 32 block RAM (R & L) with a read enable, so its output holds the
+   -- value the ringOut register used to hold. Reads (RESAMPLE_READRING) and writes (RESAMPLE_CLEAR,
+   -- RESAMPLE_WRITERING) are never in the same clock, so the RAM needs no pass-through logic (the
+   -- inferred arrays had 54 bypass registers and their address compares).
+   signal ring_we             : std_logic;
+   signal ring_wd             : std_logic_vector(31 downto 0);
+   signal ring_re             : std_logic;
+   signal ring_q              : std_logic_vector(31 downto 0);
+   signal ringOutRight        : std_logic := '0';
   
    signal XaRing_pointer      : unsigned(4 downto 0);
    signal XaRing_readpointer  : unsigned(4 downto 0);
@@ -127,7 +136,7 @@ architecture arch of cd_xa is
    signal resampleSamples     : unsigned(2 downto 0) := (others => '0');
    signal resampleSampleCnt   : unsigned(4 downto 0) := (others => '0');
    
-   signal ringOut             : signed(15 downto 0);
+   signal ringOut             : signed(15 downto 0);  -- ring buffer output (L or R, chosen when read)
    signal zigZagAddr          : unsigned(7 downto 0);
    signal zigZagOut           : signed(15 downto 0);
    signal resampleMul         : signed(16 downto 0);
@@ -449,8 +458,7 @@ begin
                      ResampleState <= RESAMPLE_IDLE;
                   end if;
                   
-                  XaRingBufferL(to_integer(XaRing_pointer)) <= (others => '0');
-                  XaRingBufferR(to_integer(XaRing_pointer)) <= (others => '0');
+                  -- ring buffer word cleared (ring_we / ring_wd)
                   XaSixStep      <= 0;
                
                when RESAMPLE_WAITFIFO =>
@@ -469,8 +477,7 @@ begin
                   ResampleState                 <= RESAMPLE_IDLE;
                   XaSixStep                     <= XaSixStep + 1;
                   XaRing_pointer                <= XaRing_pointer + 1;
-                  XaRingBufferL(to_integer(XaRing_pointer)) <= ringInL;
-                  XaRingBufferR(to_integer(XaRing_pointer)) <= ringInR;
+                  -- ring buffer word written (ring_we / ring_wd)
                
                when RESAMPLE_NEXTSAMPLE =>
                   if (resampleSamples = 7) then
@@ -484,11 +491,7 @@ begin
                
                when RESAMPLE_READRING =>
                   ResampleState <= RESAMPLE_MUL;
-                  if (resampleDir = '0') then
-                     ringOut <= XaRingBufferL(to_integer(XaRing_readpointer));
-                  else
-                     ringOut <= XaRingBufferR(to_integer(XaRing_readpointer));
-                  end if;
+                  ringOutRight  <= resampleDir;  -- ring buffer word read (ring_re)
                   --zigZagOut <= zigzagTable(resampleSamples * 32 + to_integer(resampleSampleCnt));
                   XaRing_readpointer <= XaRing_readpointer - 1;
                   
@@ -535,6 +538,48 @@ begin
       end if;
    end process;
    
+   ring_we <= '1' when (reset = '0' and XA_reset = '0' and (ResampleState = RESAMPLE_CLEAR or ResampleState = RESAMPLE_WRITERING)) else '0';
+   ring_wd <= (others => '0') when (ResampleState = RESAMPLE_CLEAR) else std_logic_vector(ringInR) & std_logic_vector(ringInL);
+   ring_re <= '1' when (reset = '0' and XA_reset = '0' and ResampleState = RESAMPLE_READRING) else '0';
+
+   iXaRing : altsyncram
+   generic map
+   (
+      address_aclr_b                     => "NONE",
+      address_reg_b                      => "CLOCK0",
+      rdcontrol_reg_b                    => "CLOCK0",
+      clock_enable_input_a               => "BYPASS",
+      clock_enable_input_b               => "BYPASS",
+      clock_enable_output_b              => "BYPASS",
+      intended_device_family             => "Cyclone V",
+      lpm_type                           => "altsyncram",
+      numwords_a                         => 32,
+      numwords_b                         => 32,
+      operation_mode                     => "DUAL_PORT",
+      outdata_aclr_b                     => "NONE",
+      outdata_reg_b                      => "UNREGISTERED",
+      power_up_uninitialized             => "FALSE",
+      ram_block_type                     => "M10K",
+      read_during_write_mode_mixed_ports => "DONT_CARE",
+      widthad_a                          => 5,
+      widthad_b                          => 5,
+      width_a                            => 32,
+      width_b                            => 32,
+      width_byteena_a                    => 1
+   )
+   port map
+   (
+      clock0    => clk1x,
+      wren_a    => ring_we,
+      address_a => std_logic_vector(XaRing_pointer),
+      data_a    => ring_wd,
+      rden_b    => ring_re,
+      address_b => std_logic_vector(XaRing_readpointer),
+      q_b       => ring_q
+   );
+
+   ringOut <= signed(ring_q(31 downto 16)) when (ringOutRight = '1') else signed(ring_q(15 downto 0));
+
    ififoOut: entity mem.SyncFifoFallThrough
    generic map
    (

@@ -1014,8 +1014,10 @@ begin
 
    process (all)
    begin
-      madr_we <= '0'; madr_wa <= (others => '0'); madr_wd <= (others => '0');
-      bcr_we  <= '0'; bcr_wa  <= (others => '0'); bcr_wd  <= (others => '0');
+      -- address / data only matter with the write enable set: default them to the CPU write so they are
+      -- a 2:1 choice (write-back or CPU) instead of a multiplexer that also produces 0
+      madr_we <= '0'; madr_wa <= std_logic_vector(bus_addr(6 downto 4)); madr_wd <= bus_dataWrite(23 downto 0);
+      bcr_we  <= '0'; bcr_wa  <= std_logic_vector(bus_addr(6 downto 4)); bcr_wd  <= bus_dataWrite;
       if (reset = '1') then
          null;
       elsif (SS_wren = '1') then

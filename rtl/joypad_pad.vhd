@@ -118,6 +118,11 @@ architecture arch of joypad_pad is
 
    signal joypad          : joypad_t;
 
+   -- Pocket: the pad is a digital pad (PadPortDS / PadPortNeGcon are tied to '0'). Saying so with a constant
+   -- removes the DualShock / NeGcon configuration commands and their states, which synthesis could only
+   -- prove unreachable through the command register.
+   constant DS_NEGCON_ON  : boolean := false;
+
    signal digitalPadSave  : std_logic := '0';
    signal analogPadSave   : std_logic := '0';
    signal rumbleOnFirst   : std_logic := '0';
@@ -416,9 +421,9 @@ begin
                         analogPadSave   <= joypad.PadPortAnalog;
                         mouseSave       <= joypad.PadPortMouse;
                         gunConSave      <= joypad.PadPortGunCon;
-                        neGconSave      <= joypad.PadPortNeGcon;
+                        if (DS_NEGCON_ON) then neGconSave <= joypad.PadPortNeGcon; end if;
                         justifSave      <= joypad.PadPortJustif;
-                        dsSave          <= joypad.PadPortDS;
+                        if (DS_NEGCON_ON) then dsSave     <= joypad.PadPortDS;     end if;
                         analogStickSave <= joypad.PadPortStick;
                         receiveValid    <= '1';
                         receiveBuffer   <= x"FF";
@@ -438,9 +443,9 @@ begin
                               analogPadSave   <= joypad.PadPortAnalog;
                               mouseSave       <= joypad.PadPortMouse;
                               gunConSave      <= joypad.PadPortGunCon;
-                              neGconSave      <= joypad.PadPortNeGcon;
+                              if (DS_NEGCON_ON) then neGconSave <= joypad.PadPortNeGcon; end if;
                               justifSave      <= joypad.PadPortJustif;
-                              dsSave          <= joypad.PadPortDS;
+                              if (DS_NEGCON_ON) then dsSave     <= joypad.PadPortDS;     end if;
                               analogStickSave <= joypad.PadPortStick;
                               receiveValid    <= '1';
                               receiveBuffer   <= x"FF";
@@ -511,8 +516,10 @@ begin
                               ack             <= '1';
                               receiveValid    <= '1';
                            elsif (transmitValue = x"43") then
-                              command <= COMMAND_CHANGE_CONFIG_MODE;
+                              -- Pocket: command is set only when the pad answers (goes to ID); otherwise it stays in
+                              -- READY, which does not read command, and every way out of READY sets it again
                               if (dsSave = '1') then
+                                 command <= COMMAND_CHANGE_CONFIG_MODE;
                                  if (dsConfigModeSave = '1') then
                                     receiveBuffer   <= x"F3";
                                  elsif (dsAnalogModeSave = '1') then
@@ -524,6 +531,7 @@ begin
                                  ack             <= '1';
                                  receiveValid    <= '1';
                             elsif (neGconSave = '1' and neGconRumble = '1') then
+                                command <= COMMAND_CHANGE_CONFIG_MODE;
                                 if (dsConfigModeSave = '1') then
                                    receiveBuffer   <= x"F3";
                                 else
@@ -534,8 +542,8 @@ begin
                                 receiveValid    <= '1';
                               end if;
                            elsif (transmitValue = x"44") then
-                              command <= COMMAND_SET_STATE;
                               if ((dsSave = '1' or (neGconSave = '1' and neGconRumble = '1')) and dsConfigModeSave = '1') then
+                                 command <= COMMAND_SET_STATE;
                                  receiveBuffer   <= x"F3";
                                  controllerState <= ID;
                                  ack             <= '1';
@@ -545,40 +553,40 @@ begin
                                  portStates(portNr).dsRumbleIndexL <= -1;
                               end if;
                            elsif (transmitValue = x"45") then
-                              command <= COMMAND_GET_STATE;
                               if ((dsSave = '1' or (neGconSave = '1' and neGconRumble = '1')) and dsConfigModeSave = '1') then
+                                 command <= COMMAND_GET_STATE;
                                  receiveBuffer   <= x"F3";
                                  controllerState <= ID;
                                  ack             <= '1';
                                  receiveValid    <= '1';
                               end if;
                            elsif (transmitValue = x"46") then
-                              command <= COMMAND_46;
                               if ((dsSave = '1' or (neGconSave = '1' and neGconRumble = '1')) and dsConfigModeSave = '1') then
+                                 command <= COMMAND_46;
                                  receiveBuffer   <= x"F3";
                                  controllerState <= ID;
                                  ack             <= '1';
                                  receiveValid    <= '1';
                               end if;
                            elsif (transmitValue = x"47") then
-                              command <= COMMAND_47;
                               if ((dsSave = '1' or (neGconSave = '1' and neGconRumble = '1')) and dsConfigModeSave = '1') then
+                                 command <= COMMAND_47;
                                  receiveBuffer   <= x"F3";
                                  controllerState <= ID;
                                  ack             <= '1';
                                  receiveValid    <= '1';
                               end if;
                            elsif (transmitValue = x"4C") then
-                              command <= COMMAND_4C;
                               if ((dsSave = '1' or (neGconSave = '1' and neGconRumble = '1')) and dsConfigModeSave = '1') then
+                                 command <= COMMAND_4C;
                                  receiveBuffer   <= x"F3";
                                  controllerState <= ID;
                                  ack             <= '1';
                                  receiveValid    <= '1';
                               end if;
                            elsif (transmitValue = x"4D") then
-                              command <= COMMAND_RUMBLE;
                               if ((dsSave = '1' or (neGconSave = '1' and neGconRumble = '1')) and dsConfigModeSave = '1') then
+                                 command <= COMMAND_RUMBLE;
                                  receiveBuffer   <= x"F3";
                                  controllerState <= ID;
                                  ack             <= '1';
@@ -644,20 +652,22 @@ begin
                                controllerState <= BUTTONLSB;
                            end if;
                            
-                           if (command = COMMAND_CHANGE_CONFIG_MODE and dsConfigModeSave = '1') then
+                           -- Pocket: the DualShock / NeGcon commands are only ever set with DS_NEGCON_ON (see READY);
+                           -- saying so here lets synthesis drop their states and the rumble configuration every time
+                           if (DS_NEGCON_ON and command = COMMAND_CHANGE_CONFIG_MODE and dsConfigModeSave = '1') then
                               controllerState <= CHANGECONFIG;
-                           elsif (command = COMMAND_SET_STATE) then
+                           elsif (DS_NEGCON_ON and command = COMMAND_SET_STATE) then
                               controllerState <= SETSTATELSB;
-                           elsif (command = COMMAND_46) then
+                           elsif (DS_NEGCON_ON and command = COMMAND_46) then
                               controllerState <= COMMAND46;
-                           elsif (command = COMMAND_47) then
+                           elsif (DS_NEGCON_ON and command = COMMAND_47) then
                               controllerState <= COMMAND47;
-                           elsif (command = COMMAND_4C) then
+                           elsif (DS_NEGCON_ON and command = COMMAND_4C) then
                               controllerState <= COMMAND4C;                           
-                           elsif (command = COMMAND_RUMBLE) then
+                           elsif (DS_NEGCON_ON and command = COMMAND_RUMBLE) then
                               controllerState <= UPDATERUMBLE;
                               rumblecount     <= 0;
-                           elsif (command = COMMAND_GET_STATE) then
+                           elsif (DS_NEGCON_ON and command = COMMAND_GET_STATE) then
                               rom_pointer     <= 6; 
                               bytecount       <= 2;
                               controllerState <= ROMRESPONSE; 
@@ -726,7 +736,7 @@ begin
                               rumbleOnFirst <= '1';
                            end if;
 
-                           if (command = COMMAND_CHANGE_CONFIG_MODE) then
+                           if (DS_NEGCON_ON and command = COMMAND_CHANGE_CONFIG_MODE) then
                               if (transmitValue = x"01") then
                                  portStates(portNr).dsConfigMode <= '1';
                               elsif (transmitValue = x"00") then

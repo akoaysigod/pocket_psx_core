@@ -399,16 +399,17 @@ architecture arch of spu is
    
    -- adsr
    type tadsr_rate   is array(0 to 4) of unsigned(6 downto 0);
-   type tadsr_ticks  is array(0 to 4) of unsigned(23 downto 0);
-   type tadsr_steps  is array(0 to 4) of signed(15 downto 0);
    type tadsr_target is array(0 to 4) of unsigned(14 downto 0);
-   
+
    signal adsr_dec      : std_logic_vector(0 to 4);
    signal adsr_exp      : std_logic_vector(0 to 4);
    signal adsr_rate     : tadsr_rate;
-   signal adsr_ticks    : tadsr_ticks;
-   signal adsr_step     : tadsr_steps;
    signal adsr_target   : tadsr_target;
+
+   -- Pocket: tick count and step of one ADSR phase per clock instead of all five (each use reads
+   -- one phase); registered like the per-phase values were, so the phase is chosen one clock ahead
+   signal adsr_ticksSel : unsigned(23 downto 0);
+   signal adsr_stepSel  : signed(15 downto 0);
    
    signal reset_adsr    : std_logic := '0';
    
@@ -910,6 +911,7 @@ begin
       variable envVolumeSum        : signed(17 downto 0);
       variable adsr_rateshift      : integer range 0 to 11;
       variable adsr_index          : integer range 0 to 4;
+      variable adsr_sel            : integer range 0 to 4;
       variable adsr_stepcalc       : signed(16 downto 0);
       variable adsr_volumeCalc     : signed(16 downto 0);
       variable adsrVolumeSum       : signed(17 downto 0);
@@ -1508,33 +1510,56 @@ begin
                   
             end case;
             
-            -- adsr
-            for i in 0 to 4 loop
-               if (adsr_rate(i) >= 48) then
-                  adsr_ticks(i) <= (to_unsigned(1, 24) sll to_integer(adsr_rate(i)(6 downto 2)) - 11);
-               else 
-                  adsr_ticks(i) <= to_unsigned(1, 24);
-               end if;
-               
-               adsr_rateshift := 0;
-               if (adsr_rate(i)(6 downto 2) <= 11) then
-                  adsr_rateshift := (11 - to_integer(adsr_rate(i)(6 downto 2)));
-               end if;
-               
-               if (adsr_rate(i) < 48) then
-                  if (adsr_dec(i) = '1') then 
-                     adsr_step(i) <= shift_left(to_signed(-8, 16) + to_integer(adsr_rate(i)(1 downto 0)), adsr_rateshift);
-                  else 
-                     adsr_step(i) <= shift_left(to_signed( 7, 16) - to_integer(adsr_rate(i)(1 downto 0)), adsr_rateshift);
-                  end if;
+            -- adsr: the phase whose values are read next clock. APPLYADSR reads the current phase,
+            -- APPLYVOLUME the phase after it (it follows APPLYADSR and waits with the phase unchanged),
+            -- CHECKKEY attack on KEYON, else release (CHECKEND leaves only when no bus write can change
+            -- KEYON); every other reader (EVALSAMPLE) reads the current phase.
+            case (voice.adsrphase) is
+               when ADSRPHASE_ATTACK  => adsr_sel := ADSR_ATTACK;
+               when ADSRPHASE_DECAY   => adsr_sel := ADSR_DECAY;
+               when ADSRPHASE_SUSTAIN => adsr_sel := ADSR_SUSTAIN;
+               when ADSRPHASE_RELEASE => adsr_sel := ADSR_RELEASE;
+               when others            => adsr_sel := ADSR_OFF;
+            end case;
+            if (state = VOICE_APPLYADSR or state = VOICE_APPLYVOLUME) then
+               case (voice.adsrphase) is
+                  when ADSRPHASE_ATTACK  => adsr_sel := ADSR_DECAY;
+                  when ADSRPHASE_DECAY   => adsr_sel := ADSR_SUSTAIN;
+                  when ADSRPHASE_RELEASE => adsr_sel := ADSR_OFF;
+                  when others            => null;
+               end case;
+            elsif (state = VOICE_CHECKEND) then
+               if (KEYON(index) = '1') then
+                  adsr_sel := ADSR_ATTACK;
                else
-                  if (adsr_dec(i) = '1') then 
-                     adsr_step(i) <= (to_signed(-8, 16) + to_integer(adsr_rate(i)(1 downto 0)));
-                  else 
-                     adsr_step(i) <= (to_signed( 7, 16) - to_integer(adsr_rate(i)(1 downto 0)));
-                  end if;
+                  adsr_sel := ADSR_RELEASE;
                end if;
-            end loop;
+            end if;
+
+            if (adsr_rate(adsr_sel) >= 48) then
+               adsr_ticksSel <= (to_unsigned(1, 24) sll to_integer(adsr_rate(adsr_sel)(6 downto 2)) - 11);
+            else
+               adsr_ticksSel <= to_unsigned(1, 24);
+            end if;
+
+            adsr_rateshift := 0;
+            if (adsr_rate(adsr_sel)(6 downto 2) <= 11) then
+               adsr_rateshift := (11 - to_integer(adsr_rate(adsr_sel)(6 downto 2)));
+            end if;
+
+            if (adsr_rate(adsr_sel) < 48) then
+               if (adsr_dec(adsr_sel) = '1') then
+                  adsr_stepSel <= shift_left(to_signed(-8, 16) + to_integer(adsr_rate(adsr_sel)(1 downto 0)), adsr_rateshift);
+               else
+                  adsr_stepSel <= shift_left(to_signed( 7, 16) - to_integer(adsr_rate(adsr_sel)(1 downto 0)), adsr_rateshift);
+               end if;
+            else
+               if (adsr_dec(adsr_sel) = '1') then
+                  adsr_stepSel <= (to_signed(-8, 16) + to_integer(adsr_rate(adsr_sel)(1 downto 0)));
+               else
+                  adsr_stepSel <= (to_signed( 7, 16) - to_integer(adsr_rate(adsr_sel)(1 downto 0)));
+               end if;
+            end if;
             
             adsr_target(ADSR_OFF    ) <= (others => '0');
             adsr_target(ADSR_ATTACK ) <= (others => '1');
@@ -1728,11 +1753,7 @@ begin
                   
                   if (reset_adsr = '1') then
                      case (voice.adsrphase) is
-                        when ADSRPHASE_OFF     => voice.adsrTicks <= adsr_ticks(ADSR_OFF);
-                        when ADSRPHASE_ATTACK  => voice.adsrTicks <= adsr_ticks(ADSR_ATTACK);
-                        when ADSRPHASE_DECAY   => voice.adsrTicks <= adsr_ticks(ADSR_DECAY);
-                        when ADSRPHASE_SUSTAIN => voice.adsrTicks <= adsr_ticks(ADSR_SUSTAIN);
-                        when ADSRPHASE_RELEASE => voice.adsrTicks <= adsr_ticks(ADSR_RELEASE);
+                        when ADSRPHASE_OFF | ADSRPHASE_ATTACK | ADSRPHASE_DECAY | ADSRPHASE_SUSTAIN | ADSRPHASE_RELEASE => voice.adsrTicks <= adsr_ticksSel;
                         when others => null;
                      end case;
                   end if;
@@ -1822,10 +1843,10 @@ begin
                   if (voice.adsrphase /= ADSRPHASE_OFF) then
                      if (voice.adsrTicks < 2) then
                         
-                        voice.adsrTicks <= adsr_ticks(to_integer(voice.adsrphase));
-                        
+                        voice.adsrTicks <= adsr_ticksSel;
+
                         adsr_index    := to_integer(voice.adsrphase);
-                        adsr_stepcalc := resize(adsr_step(adsr_index), 17);
+                        adsr_stepcalc := resize(adsr_stepSel, 17);
                         if (adsr_exp(adsr_index) = '1') then
                            if (adsr_dec(adsr_index) = '1') then
                               adsr_stepcalc := resize(shift_right(adsr_stepcalc * adsrVolume, 15), 17);
@@ -1834,10 +1855,10 @@ begin
                                  if (adsr_rate(adsr_index) < 40) then
                                     adsr_stepcalc := shift_right(adsr_stepcalc, 2);
                                  elsif (adsr_rate(adsr_index) >= 44) then
-                                    voice.adsrTicks <= "00" & adsr_ticks(to_integer(voice.adsrphase))(23 downto 2);
+                                    voice.adsrTicks <= "00" & adsr_ticksSel(23 downto 2);
                                  else
                                     adsr_stepcalc   := shift_right(adsr_stepcalc, 1);
-                                    voice.adsrTicks <= "0" & adsr_ticks(to_integer(voice.adsrphase))(23 downto 1);
+                                    voice.adsrTicks <= "0" & adsr_ticksSel(23 downto 1);
                                  end if;
                               end if;
                            end if;
@@ -1876,9 +1897,9 @@ begin
                         adsr_index    := to_integer(voice.adsrphase);
                         if ((adsr_dec(adsr_index) = '1' and to_integer(adsrVolumeNew) <= to_integer(adsr_target(adsr_index))) or (adsr_dec(adsr_index) = '0' and to_integer(adsrVolumeNew) >= to_integer(adsr_target(adsr_index)))) then
                            case (voice.adsrphase) is
-                              when ADSRPHASE_ATTACK  => voice.adsrphase <= ADSRPHASE_DECAY;   voice.adsrTicks <= adsr_ticks(ADSR_DECAY);
-                              when ADSRPHASE_DECAY   => voice.adsrphase <= ADSRPHASE_SUSTAIN; voice.adsrTicks <= adsr_ticks(ADSR_SUSTAIN);
-                              when ADSRPHASE_RELEASE => voice.adsrphase <= ADSRPHASE_OFF;     voice.adsrTicks <= adsr_ticks(ADSR_OFF);
+                              when ADSRPHASE_ATTACK  => voice.adsrphase <= ADSRPHASE_DECAY;   voice.adsrTicks <= adsr_ticksSel;
+                              when ADSRPHASE_DECAY   => voice.adsrphase <= ADSRPHASE_SUSTAIN; voice.adsrTicks <= adsr_ticksSel;
+                              when ADSRPHASE_RELEASE => voice.adsrphase <= ADSRPHASE_OFF;     voice.adsrTicks <= adsr_ticksSel;
                               when others => null;
                            end case;
                         end if;
@@ -1938,7 +1959,7 @@ begin
                      KEYOFF(index) <= '0';
                      if (voice.adsrphase /= ADSRPHASE_OFF and voice.adsrphase /= ADSR_RELEASE) then
                         voice.adsrphase <= ADSRPHASE_RELEASE;
-                        voice.adsrTicks <= adsr_ticks(ADSR_RELEASE);
+                        voice.adsrTicks <= adsr_ticksSel;  -- release (no KEYON: see adsr_sel)
                      end if;
                   end if;  
                
@@ -1954,7 +1975,7 @@ begin
                      voice.adpcmSamplePos    <= (others => '0');
                      voice.adpcmLast0        <= (others => '0');
                      voice.adpcmLast1        <= (others => '0');
-                     voice.adsrTicks         <= adsr_ticks(ADSR_ATTACK);
+                     voice.adsrTicks         <= adsr_ticksSel;  -- attack (see adsr_sel)
                      --adpcmSamples(index,0)  <= (others => '0');
                      --adpcmSamples(index,1)  <= (others => '0');
                      --adpcmSamples(index,2)  <= (others => '0');

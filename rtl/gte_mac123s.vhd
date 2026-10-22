@@ -28,6 +28,7 @@ architecture arch of gte_mac123s is
    constant MAXVAL      : signed(44 downto 0) := '0' & x"7FFFFFFFFFF";
    
    signal macResult_1   : signed(44 downto 0);
+   signal saveShifted_1 : std_logic := '0';
    
    signal checkOvf      : std_logic := '0';
    
@@ -37,6 +38,10 @@ architecture arch of gte_mac123s is
    signal satIRFlag_1   : std_logic; 
 
 begin 
+
+   -- Pocket: the results are slices of macResult_1 (same clock enable), not separate registers
+   mac_result <= macResult_1(43 downto 12) when (saveShifted_1 = '1') else macResult_1(31 downto 0);
+   macShifted <= macResult_1(43 downto 12);
 
    flagMacUF <= '1' when (checkOvf = '1' and macResult_1 < MINVAL) else '0';
    flagMacOF <= '1' when (checkOvf = '1' and macResult_1 > MAXVAL) else '0';
@@ -81,14 +86,8 @@ begin
             
             macResult_1   <= macResult(44 downto 0);
             
-            if (MACreq.saveShifted = '1') then
-               mac_result <= macResult(43 downto 12);
-            else
-               mac_result <= macResult(31 downto 0);
-            end if;
+            saveShifted_1 <= MACreq.saveShifted;
             mac_writeback <= '1';
-            
-            macShifted <= macResult(43 downto 12);
             
             checkOvf <= '1';
             

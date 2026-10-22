@@ -460,6 +460,16 @@ begin
    );
    
    fifoOut_Rd <= '1' when (memstate = MEMIDLE and fifoOut_Empty = '0') else '0';
+
+   -- synthesis translate_off
+   -- Pocket (psx_top SPU_DDR3_ON = false): with useSDRAM = '1' the DDR3 port never requests
+   process (clk2x)
+   begin
+      if rising_edge(clk2x) then
+         assert (useSDRAM /= '1' or mem_request /= '1') report "spu_ram: DDR3 request with useSDRAM = '1'" severity failure;
+      end if;
+   end process;
+   -- synthesis translate_on
    
    process (clk2x)
    begin
