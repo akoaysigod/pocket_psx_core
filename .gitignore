@@ -25,3 +25,6 @@ output_files/
 work/
 
 .DS_Store
+
+games/
+sim/
