@@ -4,6 +4,8 @@
 #   worst_paths.tcl   worst setup/hold paths per clock and corner (slack < 0.3 ns)
 #   m10kn_clocks.tcl  launch clocks of every path into a RamM10Kn (must be that RAM's own clock only)
 #   path_detail.tcl   full detail of the worst path into the SDRAM address/bank pins (-> builds/NAME/.../path_detail*.out)
+#   psram_sta.tcl     PSRAM pin timing (VRAM_CLK3X builds): worst read / write path per corner
+#   psram_io.tcl      PSRAM pin datasheet times (clock-to-output, setup / hold) per corner
 # Don't run it next to two fits: three Quartus processes exceed Docker's memory.
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)

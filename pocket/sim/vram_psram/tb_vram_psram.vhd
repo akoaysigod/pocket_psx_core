@@ -17,12 +17,22 @@ entity tb_vram_psram is
       T_IN      : time := 3 ns;
       ROW_WORDS : integer := 128;
       AUX       : boolean := true;
-      SEQ_PCT   : integer := 60      -- % chance that a write continues a run (next word, issued at once)
+      SEQ_PCT   : integer := 60;     -- % chance that a write continues a run (next word)
+      SEQ_GAP   : integer := 0;      -- a continuing write is issued after 0 .. SEQ_GAP clks (0: at once)
+      CLK_HALF  : time := 7.3815 ns; -- 67.7376 MHz (4.921 ns: clk3x)
+      CDC       : boolean := false;  -- core side on clk2x through vram_cdc, vram_psram (and the aux port) on clk3x
+      IN_REG    : boolean := false   -- DUT generic (read data through the I/O-cell register; the build sets it with CDC)
    );
 end entity;
 
 architecture sim of tb_vram_psram is
-   signal clk : std_logic := '0';
+   signal clk : std_logic := '0';    -- core side
+   signal pclk : std_logic := '0';   -- vram_psram and aux port
+   signal clk3x : std_logic := '0';
+   signal p_busy, p_rdy, p_rd, p_we : std_logic := '0';
+   signal p_burst, p_be : std_logic_vector(7 downto 0);
+   signal p_addr : std_logic_vector(24 downto 0);
+   signal p_dout, p_din : std_logic_vector(63 downto 0);
    signal reset : std_logic := '1';
    signal done : boolean := false;
    signal busy, rdy, rd, we : std_logic := '0';
@@ -43,11 +53,28 @@ architecture sim of tb_vram_psram is
    signal f0, f1 : std_logic_vector(15 downto 0);   -- FPGA data drivers
    signal dq0, dq1 : std_logic_vector(15 downto 0); -- PSRAM side data buses
 begin
-   clk <= not clk after 7.3815 ns when not done;   -- 67.7376 MHz
+   clk <= not clk after CLK_HALF when not done;
+   clk3x <= not clk3x after 4.921 ns when not done;   -- 101.6064 MHz, rising edges aligned with clk2x (CDC)
+
+   gdirect : if not CDC generate
+      pclk <= clk;
+      busy <= p_busy; p_burst <= burst; p_addr <= addr; dout <= p_dout; rdy <= p_rdy; p_rd <= rd; p_din <= din;
+      p_be <= be; p_we <= we;
+   end generate;
+   gcdc : if CDC generate
+      pclk <= clk3x;
+      icdc : entity work.vram_cdc
+      port map (clk2x => clk, clk3x => clk3x,
+                a_busy => busy, a_burstcnt => burst, a_addr => addr, a_dout => dout, a_dout_ready => rdy, a_rd => rd,
+                a_din => din, a_be => be, a_we => we,
+                b_busy => p_busy, b_burstcnt => p_burst, b_addr => p_addr, b_dout => p_dout, b_dout_ready => p_rdy,
+                b_rd => p_rd, b_din => p_din, b_be => p_be, b_we => p_we);
+   end generate;
 
    idut : entity work.vram_psram
-   port map (clk => clk, reset => reset, ddr_busy => busy, ddr_burstcnt => burst, ddr_addr => addr, ddr_dout => dout,
-             ddr_dout_ready => rdy, ddr_rd => rd, ddr_din => din, ddr_be => be, ddr_we => we,
+   generic map (IN_REG => IN_REG)
+   port map (clk => pclk, reset => reset, ddr_busy => p_busy, ddr_burstcnt => p_burst, ddr_addr => p_addr, ddr_dout => p_dout,
+             ddr_dout_ready => p_rdy, ddr_rd => p_rd, ddr_din => p_din, ddr_be => p_be, ddr_we => p_we,
              aux_req => aux_req, aux_we => aux_we, aux_addr => aux_addr, aux_din => aux_din, aux_dout => aux_dout,
              aux_done => aux_done,
              cram0_a => c0.a, cram0_dq_out => c0.dq_out, cram0_dq_oe => c0.dq_oe, cram0_dq_in => c0.dq_in, cram0_clk => c0.clk,
@@ -94,17 +121,17 @@ begin
       begin
          wait until reset = '0';
          while not done loop
-            for i in 1 to rnd(400) loop wait until rising_edge(clk); end loop;
+            for i in 1 to rnd(400) loop wait until rising_edge(pclk); end loop;
             a := rnd(4096);
             aux_addr <= std_logic_vector(to_unsigned(16#80000# + a, 21));
             if rnd(2) = 0 then
                w := std_logic_vector(to_unsigned(rnd(65536), 16)) & std_logic_vector(to_unsigned(rnd(65536), 16));
                aux_din <= w; aux_we <= '1'; aux_req <= '1';
-               loop wait until rising_edge(clk); exit when aux_done = '1' or done; end loop;
+               loop wait until rising_edge(pclk); exit when aux_done = '1' or done; end loop;
                ref(a) := w;
             else
                aux_we <= '0'; aux_req <= '1';
-               loop wait until rising_edge(clk); exit when aux_done = '1' or done; end loop;
+               loop wait until rising_edge(pclk); exit when aux_done = '1' or done; end loop;
                if (aux_done = '1' and aux_dout /= ref(a)) then
                   aux_errors <= aux_errors + 1;
                   report "aux read mismatch " & integer'image(a) & " got " & to_hstring(aux_dout) & " exp " & to_hstring(ref(a)) severity warning;
@@ -156,7 +183,12 @@ begin
       t0 := now;
       for q in 1 to NUM_REQ loop
          seqW := lastW >= 0 and lastW + 1 < 2 ** 20 and rnd(100) < SEQ_PCT;
-         if seqW then a := lastW + 1; else a := raddr; end if;
+         if seqW then
+            a := lastW + 1;
+            for k in 1 to rnd(SEQ_GAP + 1) loop wait until rising_edge(clk); end loop;
+         else
+            a := raddr;
+         end if;
          addr <= std_logic_vector(to_unsigned(a, 25));
          ts := now;
          if seqW or rnd(2) = 0 then

@@ -35,7 +35,12 @@ entity vram_psram is
    generic
    (
       CLOCK_SPEED : real := 67.7376;   -- clk in MHz (informational: the timing below is in clk cycles for it)
-      SPLIT       : integer := 32      -- bursts end at every SPLIT-word PSRAM address boundary (power of 2)
+      SPLIT       : integer := 32;     -- bursts end at every SPLIT-word PSRAM address boundary (power of 2)
+      IN_REG      : boolean := false   -- read data taken on the FALLING clk edge, half a clk after the edge the
+                                       -- direct path takes it on, by a plain register (an I/O-cell input register,
+                                       -- see ap_core.qsf), and used one clk later. Needed at clk3x (PSRAM clock
+                                       -- 50.8 MHz): with the PSRAM pins ~10 ns clock-to-output, the word is not at
+                                       -- the pins yet on the rising edge
    );
    port
    (
@@ -131,6 +136,10 @@ architecture arch of vram_psram is
    signal bData      : std_logic_vector(63 downto 0) := (others => '0');
    signal bBe        : std_logic_vector(7 downto 0) := (others => '0');
    signal rLow       : std_logic_vector(31 downto 0) := (others => '0');
+   -- IN_REG: the pins as sampled on the last falling edge, and what the rising edge before it read for
+   signal dqIn       : std_logic_vector(31 downto 0) := (others => '0');
+   signal rd_1, rdAux_1, rdCore_1 : boolean := false;
+   signal rdHigh_1   : std_logic := '0';
 
    signal aux_a      : std_logic_vector(20 downto 0) := (others => '0');
    signal aux_d      : std_logic_vector(31 downto 0) := (others => '0');
@@ -166,6 +175,13 @@ begin
    cram1_lb_n   <= o_be_n(2); cram1_ub_n  <= o_be_n(3);
 
    process (clk)
+   begin
+      if falling_edge(clk) then
+         dqIn <= cram1_dq_in & cram0_dq_in;
+      end if;
+   end process;
+
+   process (clk)
       variable free     : boolean;   -- no access in progress after this edge unless one is started
       variable startAW  : boolean;   -- start an asynchronous write (register write at init)
       variable startR   : boolean;   -- start a synchronous read part (vAddr, vLen)
@@ -177,6 +193,9 @@ begin
       variable toB      : integer;
       variable s        : integer;
       variable auxWaiting : boolean;   -- an aux request waits to be started
+      variable rdNow, rdAux, rdCore : boolean;   -- read data to take on this edge, and its owner
+      variable rdHigh   : std_logic;             -- the 32-bit half it is
+      variable dq       : std_logic_vector(31 downto 0);
    begin
       if rising_edge(clk) then
          ddr_dout_ready <= '0';
@@ -382,16 +401,27 @@ begin
          end if;
 
          ------------------------------------------------------------------------------------------------
-         -- read data (taken from the pins on the edge that raises the next PSRAM clock)
+         -- read data (taken from the pins on the edge that raises the next PSRAM clock; with IN_REG on the
+         -- falling edge after it, through dqIn, used on the next rising edge)
          ------------------------------------------------------------------------------------------------
-         if (rdData) then
-            if (owner = O_AUX) then
-               aux_dout <= cram1_dq_in & cram0_dq_in;
-            elsif (owner = O_CORE) then
-               if (rWord(0) = '0') then
-                  rLow <= cram1_dq_in & cram0_dq_in;
+         rd_1     <= rdData;
+         rdAux_1  <= owner = O_AUX;
+         rdCore_1 <= owner = O_CORE;
+         rdHigh_1 <= rWord(0);
+         if (IN_REG) then
+            rdNow := rd_1; rdAux := rdAux_1; rdCore := rdCore_1; rdHigh := rdHigh_1; dq := dqIn;
+         else
+            rdNow := rdData; rdAux := owner = O_AUX; rdCore := owner = O_CORE; rdHigh := rWord(0);
+            dq := cram1_dq_in & cram0_dq_in;
+         end if;
+         if (rdNow) then
+            if (rdAux) then
+               aux_dout <= dq;
+            elsif (rdCore) then
+               if (rdHigh = '0') then
+                  rLow <= dq;
                else
-                  ddr_dout       <= cram1_dq_in & cram0_dq_in & rLow;
+                  ddr_dout       <= dq & rLow;
                   ddr_dout_ready <= '1';
                end if;
             end if;

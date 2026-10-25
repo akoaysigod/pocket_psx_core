@@ -10,11 +10,18 @@ use ieee.numeric_std.all;
 use ieee.math_real.all;
 
 entity tb_pocket_memcard is
-   generic (CARD_WORDS : integer := 2048; SEED : integer := 1; GAP : integer := 60; MUTATION : integer := 0);
+   generic (CARD_WORDS : integer := 2048; SEED : integer := 1; GAP : integer := 60; MUTATION : integer := 0;
+            CDC : boolean := false);   -- core side on clk2x through vram_cdc, pocket_memcard + vram_psram on clk3x
+                                       -- (with vram_psram's IN_REG, as pocket_psx builds it)
 end entity;
 
 architecture sim of tb_pocket_memcard is
    signal clk_74a, clk2x : std_logic := '0';
+   signal clk3x, clkv : std_logic := '0';   -- clkv: pocket_memcard PSRAM side and vram_psram
+   signal p_busy, p_rdy, p_rd, p_we : std_logic := '0';
+   signal p_burst, p_be : std_logic_vector(7 downto 0);
+   signal p_addr : std_logic_vector(24 downto 0);
+   signal p_dout, p_din : std_logic_vector(63 downto 0);
    signal reset : std_logic := '1';
    signal done : boolean := false;
 
@@ -59,18 +66,35 @@ architecture sim of tb_pocket_memcard is
    end function;
 begin
    clk_74a <= not clk_74a after 6734 ps when not done;
-   clk2x   <= not clk2x after 7381 ps when not done;
+   clk2x   <= not clk2x after 7381.5 ps when not done;
+   clk3x   <= not clk3x after 4921 ps when not done;   -- rising edges aligned with clk2x every 2 clk2x periods
+
+   gdirect : if not CDC generate
+      clkv <= clk2x;
+      busy <= p_busy; p_burst <= burst; p_addr <= addr; dout <= p_dout; rdy <= p_rdy; p_rd <= rd; p_din <= din;
+      p_be <= be; p_we <= we;
+   end generate;
+   gcdc : if CDC generate
+      clkv <= clk3x;
+      icdc : entity work.vram_cdc
+      port map (clk2x => clk2x, clk3x => clk3x,
+                a_busy => busy, a_burstcnt => burst, a_addr => addr, a_dout => dout, a_dout_ready => rdy, a_rd => rd,
+                a_din => din, a_be => be, a_we => we,
+                b_busy => p_busy, b_burstcnt => p_burst, b_addr => p_addr, b_dout => p_dout, b_dout_ready => p_rdy,
+                b_rd => p_rd, b_din => p_din, b_be => p_be, b_we => p_we);
+   end generate;
 
    imc : entity work.pocket_memcard
    port map (clk_74a => clk_74a, bridge_addr => bridge_addr, bridge_wr => bridge_wr, bridge_wr_data => bridge_wr_data,
              bridge_rd => bridge_rd, bridge_rd_data => bridge_rd_data, overflow => overflow,
-             clk2x => clk2x, reset_2x => reset, busy => mc_busy, aux_req => aux_req, aux_we => aux_we,
+             clk2x => clkv, reset_2x => reset, busy => mc_busy, aux_req => aux_req, aux_we => aux_we,
              aux_addr => aux_addr, aux_din => aux_din, aux_dout => aux_dout, aux_done => aux_done,
              card_write => card_write);
 
    ivram : entity work.vram_psram
-   port map (clk => clk2x, reset => reset, ddr_busy => busy, ddr_burstcnt => burst, ddr_addr => addr, ddr_dout => dout,
-             ddr_dout_ready => rdy, ddr_rd => rd, ddr_din => din, ddr_be => be, ddr_we => we,
+   generic map (IN_REG => CDC)
+   port map (clk => clkv, reset => reset, ddr_busy => p_busy, ddr_burstcnt => p_burst, ddr_addr => p_addr, ddr_dout => p_dout,
+             ddr_dout_ready => p_rdy, ddr_rd => p_rd, ddr_din => p_din, ddr_be => p_be, ddr_we => p_we,
              aux_req => aux_req, aux_we => aux_we, aux_addr => aux_addr, aux_din => aux_din, aux_dout => aux_dout,
              aux_done => aux_done, card_write => card_write,
              cram0_a => c0.a, cram0_dq_out => c0.dq_out, cram0_dq_oe => c0.dq_oe, cram0_dq_in => c0.dq_in, cram0_clk => c0.clk,

@@ -752,4 +752,6 @@ set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_cas_n
 set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_cke
 set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to dram_dq[*]
 set_instance_assignment -name FAST_INPUT_REGISTER ON -to dram_dq[*]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to cram0_dq[*]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to cram1_dq[*]
 set_instance_assignment -name ALLOW_SYNCH_CTRL_USAGE OFF -to *|SDRAM_*

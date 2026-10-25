@@ -904,3 +904,88 @@ clk2x -0.47 (85C) / -0.98 (0C): still only the GPU VRAM wrap-length path (gpu.vh
   sim/cd_equiv FREEZE scripts 0-3 (boot, SotN-like + XA, CD audio, random commands seed 4 x 200): 0 mismatches;
   sim/spu_timing (LAT 5 +0..3 and LAT 30 +0..10): output identical to main's spu.vhd; pocket/sim/pocket_cd (with
   the read-ahead) PASS. pocket/sim/boot 400 ms: log identical to main f0300d8's.
+
+## 2026-10-17: performance, long loads and frame-rate dips (worktree ../sotn-perf, branch sotn-perf, from main f2b4e69; moved onto main f0300d8 on 2026-10-19 and onto main 4ec214a, area / timing pass merged, on 2026-10-22)
+- Write-up with all numbers: docs/perf.md.
+- Loads: cd_top's drive model waits at the end of a sector period (driveDelay 127) until pocket_cd has the
+  sector; pocket_cd on main does one APF data slot read per sector, and the cd-engine worktree's hardware tests
+  (late-sector marker) showed those reads often take longer than the 6.67 ms of a double-speed sector. Its
+  read-ahead (cdeIs1) removed that. SotN area loads from the disc's directory: ARE 728 KB, CAT 723 KB, CEN 496 KB
+  = 2.4 / 2.4 / 1.6 s at 2x even without late sectors. Faster than a PlayStation needs MiSTer's FORCECDSPEED /
+  INSTANTSEEK (tied off in psx_pocket_core; the speed hack is off while XA plays or the MDEC works). Not done.
+- New benchmark sim/gpu_perf: the real gpu.vhd draws gen_cmds.py command lists (16x16 tiles, 8/16/32 sprites,
+  Gouraud textured / untextured quads, Gouraud lines, full-screen fades; opaque and semi-transparent), fed as fast
+  as its FIFO takes them, display running at 256 x 240. VRAM: MEM=0 vram_psram + PSRAM models, MEM=1 fast
+  DDR3-like (first word after FAST_LAT clk2x, then 1 word / clk2x), MEM=3 vram_cdc + vram_psram on clk3x.
+  GPU=up = upstream gpu / gpu_poly / gpu_line. PROF=1 = clocks per gpu_poly / gpu_rect state. Sim-only quirk:
+  polygons with a vertex at x < 0 stop nvc in gpu_poly (to_integer of a negative edge start), so the generator
+  keeps them on screen.
+- Results (us per workload, docs/perf.md table): PSRAM 33.9 MHz is 1.4-1.9x the fast VRAM (lat 12) and VRAM is
+  busy 80-90 % of the drawing time; the 3-divider / shared-multiplier GPU trims cost 0-11 % (small polygons
+  most: 5 division rounds of 49 clk2x per textured Gouraud triangle instead of 3); semi-transparent drawing
+  spends ~half its time waiting for the framebuffer row read (READWAIT / REQUESTLINE). 300 12x12 semi-transparent
+  textured quads: 9.0 ms; 300 24-pixel semi-transparent lines: 2.8 ms. PSRAM at 50.8 MHz: -17 to -27 % in every
+  workload. With FAST_LAT = 24 the fast VRAM is about as fast as PSRAM at 50.8 MHz.
+- Tried and dropped: burst write suspend (stop the PSRAM clock while a write burst waits for its next word):
+  no change at either clock (the GPU's 1 word / 4 clk2x keeps bursts going at 33.9 MHz, and at 50.8 MHz the first
+  word's latency gives it enough lead). A 2-entry vram_cdc queue: within 1 % of 1 entry.
+- New pocket/src/fpga/core/vram_cdc.vhd + pocket_psx VRAM_CLK3X: vram_psram and pocket_memcard's PSRAM side on
+  clk3x (PSRAM clock 50.8 MHz, latency code 3 is allowed up to 52 MHz), requests through one register, read words
+  announced with a toggle and taken straight from vram_psram's ddr_dout. vram_psram generic IN_REG (with
+  VRAM_CLK3X): read data taken on the falling clk edge by a plain register (I/O cell, ap_core.qsf
+  FAST_INPUT_REGISTER on cram*_dq) and used one clk later. VRAM_CLK3X is false on the branch (see below).
+- Tests: pocket/sim/vram_psram and pocket/sim/pocket_memcard gained -gCDC=true (core side clk2x through vram_cdc,
+  controller on clk3x) and -gIN_REG; tb_vram_psram also -gSEQ_GAP (gaps before continuing writes) and
+  -gCLK_HALF. Default runs: same results as before. Results for the current code: see docs/perf.md section 4.
+- PSRAM pin timing (tools/psram_io.tcl: datasheet times of the cram pins per corner; no I/O constraints exist):
+  core registers give cram0_clk 10.1-10.7 ns clock-to-output (slow 85C), 2.9-4.5 ns (fast 0C), dq setup ~4.2 ns.
+  Rising-edge capture at 50.8 MHz: -3.7 ns (sim with those delays: 15,926 read errors; 33.9 MHz fine, +6.4 ns).
+  All PSRAM registers in the I/O cells: clk3x setup -2.36 ns from the write-burst decision to the byte-enable
+  outputs. Falling-edge capture with core-register outputs (current code): setup ~+3.6 ns slow, hold ~+0.3 ns
+  fast 0C (estimate from perf_v2's pin times): too thin. Next: constraints on the interface (generated clock on
+  cram*_clk, input delays from tACLK / tKOH, multicycle to the falling-edge capture) so the fitter checks it and
+  sets the input delay chain, or a phase-shifted capture clock; then a hardware test. No bitstream of the clk3x
+  path is for hardware yet.
+- Builds (all seed-searchable with tools/seeds.sh): perf_base (VRAM_CLK3X false) seed 1 = cc_s1 exactly
+  (18,215 ALMs, 1,847 LABs, worst setup +0.340, hold +0.295). perf_v1 (vram_cdc with its own read-data register)
+  seeds 1 / 2: 1,850 / 1,853 LABs, no fit. perf_v2 (read data straight from ddr_dout) seed 1: 18,264 ALMs, 1,848
+  LABs, setup met, fast 0C hold -0.067 on known placement paths (pixelpipeline stage3 -> stage4, savestates
+  SS_Adr, sdram ch1_dout -> dma_data; vram_cdc paths +0.076 / +0.086). perf_v3 (all PSRAM registers in I/O
+  cells) seed 1 1,852 LABs, seed 2 fits with clk3x setup -2.36. perf_v4 (falling-edge capture, dq input
+  registers packed in the I/O cells): seeds 1 / 2 need 1,858 / 1,855 LABs, no fit.
+- pocket/sim/pocket_memcard -gCDC=true with the falling-edge capture: read mismatches (that testbench has no board
+  delays, the extreme of the hold problem); with the earlier rising-edge IN_REG it passed (seeds 1, 2, 7) but that
+  one fails at the real slow-corner delays. vram_psram -gCDC=true -gIN_REG=true: delays 10+4, 11+2, 6+2 ns PASS,
+  13+3 and 3+0.5 ns FAIL; mutations (queue overfill 5,743 errors, IN_REG data a clk early 10,507 + 425) caught.
+- Branch state: VRAM_CLK3X false (the 0.1.4 path, default tests unchanged: vram_psram seed 1 writes 3,582 /
+  93 ns per write / 88 ns per read word, memcard PASS), no FAST_INPUT_REGISTER lines in ap_core.qsf. Nothing
+  committed.
+- 2026-10-22, onto main 4ec214a (area / timing pass): ELAB 0 errors; vram_psram / memcard default sims unchanged.
+  Fit perf4ec_v3x_s1 (VRAM_CLK3X true via OVERRIDE, FAST_INPUT_REGISTER on cram*_dq via EXTRA_QSF, seed 1):
+  17,416 ALMs needed (main 4ec214a seed 1: 17,362), 863 recoverable, 1,847 LABs, 273 M10K, 57 DSP; worst setup
+  +0.361 (clk3x slow 85C), worst hold -0.025 fast 0C, pocket_psx l_addr -> sdram ch3buf_addr (clk1x -> clk3x).
+  Area no longer limits the change. psram_io.tcl on it: falling-edge capture setup +4.2 ns (slow 85C), hold
+  about -0.1 ns + board delay (fast 0C); valid sample point 0.7-4.8 ns after the clk3x rising edge. Still open:
+  the read capture (input constraints / delay chain or phase-shifted capture clock), then hardware.
+- PSRAM pin constraints (option 1 of the two; option 2, a phase-shifted capture clock from the PLL, kept in
+  docs/perf.md section 4 point 5): core/core_constraints.sdc, only when the dqIn registers exist. Generated
+  clocks psram_clk (o_clk register, clk3x / 2) and cram0_clk / cram1_clk (pins), input delays tACLK 9 + board /
+  tKOH 2, output delays tSP 3 / tCSP 4 / tHD 2 + board (board 0-0.5 ns each way, not measured), multicycles
+  (read setup 24.6 / hold 4.92 ns, outputs 9.84 / -9.84 ns: checked in the reports), psram_hold_guard 1.5 ns.
+  First a Quartus generated clock on the port with the clk3x pin as source: "no paths exist between clock target
+  and its clock source" (it does not trace through the o_clk register); one on o_clk|q, then one per pin from
+  there, works. On perf4ec_v3x_s1 (analyzer only): read setup +4.31 / hold +0.40 (Quartus pairs each pin with
+  its own clock path; the hand estimate -0.1 took the worst of all pins), write setup +1.11.
+  Fit perf4ec_sdc_s1 (seed 1, same OVERRIDE / EXTRA_QSF): dq delay chains D1 16 / D3_0 7 on all 32 pins; read
+  setup +1.63 (slow 85C), hold +1.84 real (fast 0C, +0.34 beyond the guard), writes setup +2.12 / hold +6.9;
+  whole design meets every corner (worst setup +0.759, worst hold +0.031), no critical warnings; 17,430 ALMs,
+  1,843 LABs, 273 M10K, 57 DSP. vram_psram sim -gCDC=true -gIN_REG=true at 11.5+2 ns (seeds 1, 2) and 3.3+2 ns
+  (seeds 1, 3): PASS, 62 ns per read word. -> releases/akoaysigod.PSX_0.1.4_perf4ec_sdc_s1.zip for the hardware
+  test. Branch default still VRAM_CLK3X false / no FAST_INPUT_REGISTER lines.
+- 2026-10-25: perf4ec_sdc_s1 tested on hardware: works. Made it the default for release 0.2: VRAM_CLK3X true,
+  FAST_INPUT_REGISTER ON on cram0_dq[*] / cram1_dq[*] in ap_core.qsf, core.json version 0.2 (date 2026-10-25),
+  README status. Build v02_s1 (seed 1, no OVERRIDE / EXTRA_QSF): 17,430 ALMs, 1,843 LABs, 273 M10K, 57 DSP,
+  worst setup +0.759, every corner met; map (apart from source line numbers), fit and sta reports identical to
+  perf4ec_sdc_s1, bitstream checksum 0x082CA109 vs 0x082CA200 from the APF build ID ROM only (build_id.mif: date,
+  time, unique ID). -> releases/akoaysigod.PSX_0.2_v02_s1.zip. The testbenches still default to the 0.1.4 path
+  (CDC false), as does pocket/sim/boot (vram_psram on clk2x).
