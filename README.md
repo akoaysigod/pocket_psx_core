@@ -26,7 +26,12 @@ in `ref/upstream/rtl/`.
 - Not included and not redistributable: the BIOS (Sony), game images, and Intel's `altera_mf` simulation library
   (`sim/altera_lib`).
 
-## Status (version 0.1.4, same core as 0.1.2: build cc seed 1, 2026-10-15)
+## Status (version 0.2: build v02 seed 1, 2026-10-25)
+
+New since 0.1.4: the CD controller engine with SD card read-ahead (loads no longer wait on slow SD card reads),
+VRAM at 50.8 MHz instead of 33.9 MHz (GPU drawing 17-27 % faster in simulation, `docs/perf.md`), the docked bar
+fix, and game entries from Pocket Sync / Pupdate. On a card from 0.1.4 or older, move the game folders to
+`Assets/psx/common/` (see "Adding a game").
 
 Tested on hardware: the game runs at full speed (60 fps), the opening movies (FMVs) play, memory card saves work
 (saved per game by the Pocket, quit the core to write the file), L2 / R2 come from button combos on the handheld
@@ -66,7 +71,7 @@ Main pieces of the Pocket wrapper (`pocket/src/fpga/core/`):
 | Part | Where it lives on the Pocket |
 | --- | --- |
 | Main RAM, BIOS, SPU RAM | SDRAM (`rtl/sdram.sv`, clk3x = 101.6 MHz) |
-| VRAM, memory card | both PSRAMs side by side as one 32-bit memory, synchronous burst mode (`vram_psram.vhd`) |
+| VRAM, memory card | both PSRAMs side by side as one 32-bit memory, synchronous burst mode at 50.8 MHz (clk3x / 2; `vram_psram.vhd`, behind `vram_cdc.vhd`) |
 | CD image | read from the game's `.bin` files through APF data slots, with read-ahead into an 8-sector ring (`pocket_cd.vhd`) |
 | Memory card file | APF save slot, loaded into / written back from PSRAM (`pocket_memcard.vhd`) |
 | Video, audio, controller | `pocket_video.vhd`, `pocket_audio48.vhd` (44.1 kHz to the Pocket's 48 kHz; interpolation off by default for room, `AUDIO_INTERP` in `pocket_psx.vhd`), `sound_i2s.sv`, `pocket_psx.vhd`, `core_top.v` |
@@ -81,7 +86,7 @@ Silicon); one full build takes about 35 minutes and ~2 GB of Docker memory.
     tools/build.sh NAME              # full build -> builds/NAME/pocket/src/fpga/output_files/ap_core.rbf_r
     ELAB=1 tools/build.sh NAME       # HDL check only (~1 minute)
     MAPONLY=1 tools/build.sh NAME    # synthesis only (resource estimate)
-    SEED=1 tools/build.sh NAME       # fitter seed (releases 0.1.2 to 0.1.4 = build cc seed 1)
+    SEED=1 tools/build.sh NAME       # fitter seed (releases 0.1.2 to 0.1.4 = build cc seed 1, 0.2 = build v02 seed 1)
 
 The chip is about 99 % full: depending on the fitter seed, a build may not fit or may miss timing by a fraction of a
 nanosecond (with the SDRAM change most seeds pass). `tools/seeds.sh NAME` tries seeds until one fits and meets timing at all four corners (two chains with

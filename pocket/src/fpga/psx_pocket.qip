@@ -71,6 +71,7 @@ set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) ../../../r
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) ../../../rtl/sdram.sv ]
 set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/psram_async.vhd ]
 set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/vram_psram.vhd ]
+set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/vram_cdc.vhd ]
 set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/psx_pocket_core.vhd ]
 set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/pocket_cd.vhd ]
 set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) core/pocket_memcard.vhd ]

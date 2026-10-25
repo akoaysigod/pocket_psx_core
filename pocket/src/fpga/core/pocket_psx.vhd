@@ -182,7 +182,23 @@ architecture arch of pocket_psx is
    signal trackinfo_write: std_logic;
 
    -- memory card / PSRAM
-   signal vramrst_2x     : std_logic_vector(1 downto 0) := (others => '1');
+   -- VRAM_CLK3X: vram_psram (and the memory card's PSRAM side) run on clk3x, so the PSRAM clock is clk3x / 2 =
+   -- 50.8 MHz instead of clk2x / 2 = 33.9 MHz (same latency code 3, allowed up to 52 MHz); vram_cdc carries the
+   -- core's clk2x requests over. GPU drawing with SotN-like loads: 17-27 % less time (sim/gpu_perf).
+   -- On since 0.2 (tested on hardware). The falling-edge read capture (vram_psram IN_REG) needs the cram*_dq
+   -- I/O-cell input registers (ap_core.qsf) and the PSRAM pin constraints (core_constraints.sdc), with which the
+   -- fitter centres the sample point in the data window (docs/perf.md, section 4). False: the 0.1.4 path.
+   constant VRAM_CLK3X   : boolean := true;
+   function vclk_mhz(clk3x_on : boolean) return real is
+   begin
+      if clk3x_on then return 101.6064; else return 67.7376; end if;
+   end function;
+   signal clkv           : std_logic;   -- vram_psram / pocket_memcard PSRAM side clock
+   signal vramrst_v      : std_logic_vector(1 downto 0) := (others => '1');
+   signal v_busy, v_rd, v_we, v_dout_ready : std_logic;
+   signal v_burstcnt, v_be : std_logic_vector(7 downto 0);
+   signal v_addr         : std_logic_vector(24 downto 0);
+   signal v_din, v_dout  : std_logic_vector(63 downto 0);
    signal mc_busy        : std_logic;
    signal mcbusy_1x      : std_logic_vector(2 downto 0) := (others => '1');
    signal mc_overflow    : std_logic;
@@ -407,10 +423,12 @@ begin
    );
 
    ---------------------------------------------------------------- memory card 1 file <-> PSRAM
-   process (clk2x)
+   clkv <= clk3x when VRAM_CLK3X else clk2x;
+
+   process (clkv)
    begin
-      if rising_edge(clk2x) then
-         vramrst_2x <= vramrst_2x(0) & (not pll_locked);
+      if rising_edge(clkv) then
+         vramrst_v <= vramrst_v(0) & (not pll_locked);
       end if;
    end process;
 
@@ -419,20 +437,36 @@ begin
    (
       clk_74a => clk_74a, bridge_addr => bridge_addr, bridge_wr => bridge_wr, bridge_wr_data => bridge_wr_data,
       bridge_rd => bridge_rd, bridge_rd_data => memcard_rd_data, overflow => mc_overflow,
-      clk2x => clk2x, reset_2x => vramrst_2x(1), busy => mc_busy,
+      clk2x => clkv, reset_2x => vramrst_v(1), busy => mc_busy,
       aux_req => aux_req, aux_we => aux_we, aux_addr => aux_addr, aux_din => aux_din, aux_dout => aux_dout,
       aux_done => aux_done, card_write => card_write
    );
 
    ---------------------------------------------------------------- VRAM / memory card buffer in PSRAM
+   gvcdc : if VRAM_CLK3X generate
+      icdc : entity work.vram_cdc
+      port map
+      (
+         clk2x => clk2x, clk3x => clk3x,
+         a_busy => ddr_busy, a_burstcnt => ddr_burstcnt, a_addr => ddr_addr(24 downto 0), a_dout => ddr_dout,
+         a_dout_ready => ddr_dout_ready, a_rd => ddr_rd, a_din => ddr_din, a_be => ddr_be, a_we => ddr_we,
+         b_busy => v_busy, b_burstcnt => v_burstcnt, b_addr => v_addr, b_dout => v_dout,
+         b_dout_ready => v_dout_ready, b_rd => v_rd, b_din => v_din, b_be => v_be, b_we => v_we
+      );
+   end generate;
+   gvdirect : if not VRAM_CLK3X generate
+      ddr_busy <= v_busy; v_burstcnt <= ddr_burstcnt; v_addr <= ddr_addr(24 downto 0); ddr_dout <= v_dout;
+      ddr_dout_ready <= v_dout_ready; v_rd <= ddr_rd; v_din <= ddr_din; v_be <= ddr_be; v_we <= ddr_we;
+   end generate;
+
    -- not reset with the core: APF loads the memory card into it while the core is held in reset
    ivram : entity work.vram_psram
-   generic map (CLOCK_SPEED => 67.7376)
+   generic map (CLOCK_SPEED => vclk_mhz(VRAM_CLK3X), IN_REG => VRAM_CLK3X)
    port map
    (
-      clk => clk2x, reset => vramrst_2x(1),
-      ddr_busy => ddr_busy, ddr_burstcnt => ddr_burstcnt, ddr_addr => ddr_addr(24 downto 0), ddr_dout => ddr_dout,
-      ddr_dout_ready => ddr_dout_ready, ddr_rd => ddr_rd, ddr_din => ddr_din, ddr_be => ddr_be, ddr_we => ddr_we,
+      clk => clkv, reset => vramrst_v(1),
+      ddr_busy => v_busy, ddr_burstcnt => v_burstcnt, ddr_addr => v_addr, ddr_dout => v_dout,
+      ddr_dout_ready => v_dout_ready, ddr_rd => v_rd, ddr_din => v_din, ddr_be => v_be, ddr_we => v_we,
       aux_req => aux_req, aux_we => aux_we, aux_addr => aux_addr, aux_din => aux_din, aux_dout => aux_dout,
       aux_done => aux_done, card_write => card_write,
       cram0_a => cram0_a, cram0_dq_out => cram0_dq_out, cram0_dq_oe => cram0_dq_oe, cram0_dq_in => cram0_dq_in,
