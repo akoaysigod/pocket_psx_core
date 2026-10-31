@@ -608,6 +608,7 @@ pocket_psx ipsx (
     .reset_n_74a      ( reset_n ),
     .pll_locked       ( pll_core_locked ),
     .loading_74a      ( loading ),
+    .inmenu_74a       ( osnotify_inmenu ),
     .bridge_addr      ( bridge_addr ),
     .bridge_wr        ( bridge_wr ),
     .bridge_wr_data   ( bridge_wr_data ),

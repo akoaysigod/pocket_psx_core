@@ -24,8 +24,8 @@ TIE = {
  'vCrop': '"00"', 'hCrop': "'0'", 'SPUon': "'1'", 'SPUIRQTrigger': "'0'", 'SPUSDRAM': "'1'", 'REVERBOFF': "'0'",
  'REPRODUCIBLESPUDMA': "'0'", 'WIDESCREEN': '"00"', 'oldGPU': "'0'", 'biosregion': '"00"', 'region': '"00"',
  'isPal': "'0'", 'pal60': "'0'",
- # Pocket: no Linux side / no lid / no OSD pause / disc always present
- 'pause': "'0'", 'hps_busy': "'0'", 'LIDopen': "'0'", 'fastCD': "'0'", 'videoout_on': "'1'", 'fastboot': "'0'",
+ # Pocket: no Linux side / no lid / disc always present (pause: while the Pocket menu is open, pocket_psx.vhd)
+ 'hps_busy': "'0'", 'LIDopen': "'0'", 'fastCD': "'0'", 'videoout_on': "'1'", 'fastboot': "'0'",
  'memcard2_load': "'0'", 'memcard2_mounted': "'0'", 'memcard2_available': "'0'", 'memcard2_ack': "'0'",
  'memcard2_write': "'0'", 'memcard2_addr': '(others => \'0\')', 'memcard2_dataIn': '(others => \'0\')',
  'DSAltSwitchMode': "'0'", 'PadPortEnable1': "'1'", 'PadPortDigital1': "'1'",

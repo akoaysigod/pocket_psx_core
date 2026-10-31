@@ -8,6 +8,7 @@
 --    (pocket_memcard)
 --  * controller 1 (APF cont1_key) -> PSX digital pad, L2 / R2 also from button combos (pocket_buttons) as chosen in
 --    Core Settings (interact.json: bridge writes to 0x80000000 / 0x80000004)
+--  * the core pauses while the Pocket's menu is open (core_bridge_cmd osnotify_inmenu)
 --  * video: core output (clkvid, 53.69 MHz, one pixel per video_ce) -> Pocket scaler signals on clkpix (half of
 --    clkvid, same PLL; APF takes pixel clocks up to ~50 MHz), video_skip on clocks without a new pixel, scaler slot
 --    0-4 = width 256/320/368/512/640 sent when DE falls
@@ -32,6 +33,7 @@ entity pocket_psx is
       reset_n_74a        : in  std_logic;   -- APF reset_n (released after the data slots are loaded)
       pll_locked         : in  std_logic;
       loading_74a        : in  std_logic;   -- APF is writing data slots
+      inmenu_74a         : in  std_logic;   -- the Pocket's menu is open (core_bridge_cmd osnotify_inmenu)
       -- APF bridge (clk_74a)
       bridge_addr        : in  std_logic_vector(31 downto 0);
       bridge_wr          : in  std_logic;
@@ -231,6 +233,7 @@ architecture arch of pocket_psx is
    signal keys_pad       : std_logic_vector(15 downto 0);
    signal cfg_r2_74, cfg_l2_74 : std_logic_vector(1 downto 0) := "00";   -- Core Settings "R2 button" / "L2 button"
    signal cfg_s1, cfg_s2 : std_logic_vector(3 downto 0) := (others => '0');
+   signal inmenu_s       : std_logic_vector(1 downto 0) := "00";
 
    -- video
    signal hblank, vblank, hsync, vsync, video_ce : std_logic;
@@ -345,6 +348,7 @@ begin
          keys_s2 <= keys_s1;
          cfg_s1  <= cfg_r2_74 & cfg_l2_74;   -- static settings: a plain two-register sync is enough
          cfg_s2  <= cfg_s1;
+         inmenu_s <= inmenu_s(0) & inmenu_74a;
       end if;
    end process;
 
@@ -358,7 +362,9 @@ begin
       clk1x => clk1x, clk2x => clk2x, clk3x => clk3x, clkvid => clkvid,
       reset => psx_reset,
       hasCD => hascd_1x(1),
-      isPaused => open,
+      -- psx_top's pause (MiSTer's "Pause when OSD open"): waits for an idle point, then stops the core's clock
+      -- enable; video keeps scanning out, audio holds its last sample
+      pause => inmenu_s(1), isPaused => open,
       ram_refresh => ram_refresh, ram_dataWrite => ram_din, ram_dataRead32 => ram_dout32, ram_Adr => core_ram_Adr,
       ram_cntDMA => ram_cntDMA, ram_be => ram_be, ram_rnw => core_ram_rnw, ram_ena => core_ram_ena, ram_dma => ram_dma,
       ram_cache => ram_cache, ram_done => (ram_rd_ready or ram_wr_ready),

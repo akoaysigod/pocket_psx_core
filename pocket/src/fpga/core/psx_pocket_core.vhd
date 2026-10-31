@@ -13,6 +13,7 @@ entity psx_pocket_core is
       clkvid : in std_logic;
       reset : in std_logic;
       isPaused : out std_logic;
+      pause : in std_logic;
       ram_refresh : out std_logic;
       ram_dataWrite : out std_logic_vector(31 downto 0);
       ram_dataRead32 : in std_logic_vector(31 downto 0);
@@ -119,7 +120,7 @@ begin
       clkvid => clkvid,
       reset => reset,
       isPaused => isPaused,
-      pause => '0',
+      pause => pause,
       hps_busy => '0',
       loadExe => '0',
       exe_initial_pc => (others => '0'),

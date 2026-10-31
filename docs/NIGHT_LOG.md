@@ -989,3 +989,14 @@ clk2x -0.47 (85C) / -0.98 (0C): still only the GPU VRAM wrap-length path (gpu.vh
   perf4ec_sdc_s1, bitstream checksum 0x082CA109 vs 0x082CA200 from the APF build ID ROM only (build_id.mif: date,
   time, unique ID). -> releases/akoaysigod.PSX_0.2_v02_s1.zip. The testbenches still default to the 0.1.4 path
   (CDC false), as does pocket/sim/boot (vram_psram on clk2x).
+
+## 2026-10-30: pause while the Pocket menu is open (branch menu-pause, from main 1d2a8b6)
+
+- The menu pause alone, taken from branch speed-settings (without its speed settings): core_bridge_cmd's
+  osnotify_inmenu (APF host command 0xB0) -> pocket_psx inmenu_74a -> 2-FF sync into clk1x -> psx_top's pause input
+  (make_core_wrapper.py no longer ties it). psx_top's pause logic is upstream's, unchanged: it waits for an idle point
+  and stops ce; video keeps scanning out, audio holds its last sample, the CD countdown stops, SDRAM refresh and the
+  memory card readback go on; unpausing waits for the raster to return to where the pause began (up to a frame).
+- pocket/sim/boot: PAUSE_AT_MS / PAUSE_MS raise pause (the new port has no default, so tb_boot connects it). The same
+  pause logic was simulated on speed-settings (2026-10-25): pause at 300 ms for 20 ms, isPaused 12 us later, resumed
+  13.4 ms after release, boot unchanged otherwise. Not simulated or built on this branch yet.

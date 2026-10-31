@@ -3,7 +3,7 @@
 # pocket/src/fpga/psx_pocket.qip (reset-only savestates, black MDEC, small GTE), with the synthesis
 # translate_off regions removed (debug file output) and the simulation-only fixups of sim/gpu_vram.
 # usage: BIOS=<scph1001.bin> ALTERA_MF_DIR=<compiled altera_mf dir> [RTL_OVERRIDE="<file.vhd> ..."] [WORKDIR=<dir>] [VRAM_PSRAM=<vram_psram variant>] \
-#        pocket/sim/boot/run.sh [RUN_MS] [DUMP_EVERY]
+#        [PAUSE_AT_MS=<ms> PAUSE_MS=<ms>] pocket/sim/boot/run.sh [RUN_MS] [DUMP_EVERY]
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 repo="$here/../../.."
@@ -68,4 +68,4 @@ nvc --std=2008 $L -a --relaxed $S/RamMLAB.vhd $S/RamM10Kn.vhd $S/dpram.vhd $S/Sy
    $S/psx_mister.vhd
 nvc --std=2008 $L -a --relaxed "$core/psram_async.vhd" "${VRAM_PSRAM:-$core/vram_psram.vhd}" "$core/psx_pocket_core.vhd" \
    "$here/../vram_psram/psram_model.vhd" "$here/ram_model.vhd" "$here/tb_boot.vhd"
-nvc --std=2008 --ieee-warnings=off $L -H 3g -M 64m -e tb_boot -gRUN_MS=${1:-2000} -gDUMP_EVERY=${2:-20} -gDEBUG_SS=${DEBUG_SS:-0} -gTRACE_IO_N=${TRACE_IO_N:-0} -gTRACE_FROM_MS=${TRACE_FROM_MS:-0} -gFAST_SHELL=${FAST_SHELL:-false} -gSKIP_INTRO=${SKIP_INTRO:-false} -r
+nvc --std=2008 --ieee-warnings=off $L -H 3g -M 64m -e tb_boot -gRUN_MS=${1:-2000} -gDUMP_EVERY=${2:-20} -gDEBUG_SS=${DEBUG_SS:-0} -gTRACE_IO_N=${TRACE_IO_N:-0} -gTRACE_FROM_MS=${TRACE_FROM_MS:-0} -gFAST_SHELL=${FAST_SHELL:-false} -gSKIP_INTRO=${SKIP_INTRO:-false} -gPAUSE_AT_MS=${PAUSE_AT_MS:-0} -gPAUSE_MS=${PAUSE_MS:-0} -r
