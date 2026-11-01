@@ -227,6 +227,13 @@ entity psx_top is
       validSStates          : out std_logic_vector(3 downto 0);
       rewind_on             : in  std_logic;
       rewind_active         : in  std_logic;
+      -- Pocket save states (driven by pocket_psx): the save / restore routine runs on the PSX CPU from SDRAM above
+      -- main RAM (cpu.vhd SS_VECTOR) and talks to pocket_psx through the control byte at EXP2 0x1F803F00
+      ss_req                : in  std_logic := '0';   -- raise the hidden save-state interrupt
+      ss_restore            : in  std_logic := '0';   -- reset boots into the routine, memories are not cleared
+      ss_status             : in  std_logic_vector(7 downto 0) := (others => '0');   -- control byte read
+      ss_cmd                : out std_logic_vector(7 downto 0) := (others => '0');   -- control byte write
+      ss_cmd_we             : out std_logic := '0';
       -- cheats
       cheat_clear           : in  std_logic;
       cheats_enabled        : in  std_logic;
@@ -262,6 +269,7 @@ architecture arch of psx_top is
 
    signal reset_in               : std_logic := '0';
    signal reset_intern           : std_logic := '0';
+   signal cpu_reset              : std_logic;
    signal reset_exe              : std_logic;
    
    signal ce                     : std_logic := '0';
@@ -698,6 +706,21 @@ architecture arch of psx_top is
    
    signal debug_firstGTE         : std_logic;
    signal dbg_pc, dbg_sr, dbg_exc_epc, dbg_exc_cause, dbg_cnt, dbg_irq_epc : unsigned(31 downto 0);
+
+   -- save states: ss_mode = the routine is running (from the hidden interrupt or the restore boot until the
+   -- routine's rfe sets SR.IEc again); in it the CPU reaches SDRAM above main RAM (RAM address bits 22:21 unmasked).
+   -- ss_freeze (set by the routine) stops the modules' own time sources so their state holds still while it runs.
+   signal ss_mode                : std_logic := '0';
+   signal ss_freeze              : std_logic := '0';
+   signal ss_spuhold             : std_logic := '0';   -- SPU held in IDLE (set by the routine after the SPU settled)
+   signal ss_quiet_cd            : std_logic;
+   signal ss_quiet               : std_logic := '0';   -- a snapshot may be taken now (all modules idle, CD quiet)
+   signal ss_status_int          : std_logic_vector(7 downto 0);
+   signal ss_iec_1               : std_logic := '0';
+   signal ss_taken               : std_logic;
+   signal ss_irq                 : std_logic;
+   signal ss_cmd_int             : std_logic_vector(7 downto 0);
+   signal ss_cmd_we_int          : std_logic;
    signal dbg_post               : std_logic_vector(7 downto 0) := (others => '0');
    signal dbg_io                 : unsigned(31 downto 0) := (others => '0');
    signal dbg_gpu                : std_logic_vector(63 downto 0);
@@ -774,7 +797,10 @@ begin
       end if;
    end process;
  
-   SS_idle    <= SS_Idle_gpu and SS_Idle_mdec and SS_Idle_cd and SS_idle_spu and SS_idle_pad and SS_idle_irq and SS_idle_cpu and SS_idle_gte and SS_idle_dma;
+   -- (Pocket save states: while the routine's freeze is on the CD counts as idle for the pause: its controller is
+   -- stopped at a quiet clock, and a sector fetch still on its way, which keeps the CD's SS_idle low, is not part of
+   -- a state; it can wait for APF, which delivers nothing until the save is done)
+   SS_idle    <= SS_Idle_gpu and SS_Idle_mdec and (SS_Idle_cd or ss_freeze) and SS_idle_spu and SS_idle_pad and SS_idle_irq and SS_idle_cpu and SS_idle_gte and SS_idle_dma;
    
    Pause_Idle <= SS_Idle_gpu and SS_Idle_mdec and Pause_idle_cd and SS_idle_spu and SS_idle_pad and SS_idle_irq and SS_idle_cpu and SS_idle_gte and SS_idle_dma; 
    
@@ -1251,6 +1277,7 @@ begin
       bus_read             => bus_irq_read,     
       bus_write            => bus_irq_write,    
       bus_dataRead         => bus_irq_dataRead,
+      ss_mode              => ss_mode,
       
       irqRequest           => irqRequest,
 
@@ -1353,6 +1380,7 @@ begin
       SS_rden              => SS_rden(3),     
       SS_DataRead          => SS_DataRead_DMA,
       SS_idle              => SS_idle_dma,
+      ss_mode              => ss_mode,
       debug_dma            => dbg_dma
    );
    
@@ -1367,8 +1395,45 @@ begin
    
    ram_Adr       <=   "00" & ram_dma_Adr(22 downto 0) when (cpuPaused = '1' and ram8mb = '1') else 
                     "0000" & ram_dma_Adr(20 downto 0) when (cpuPaused = '1' and ram8mb = '0') else 
-                    ram_cpu_Adr(24 downto 23) &        ram_cpu_Adr(22 downto 0) when (ram8mb = '1') else
+                    ram_cpu_Adr(24 downto 23) &        ram_cpu_Adr(22 downto 0) when (ram8mb = '1' or ss_mode = '1') else
                     ram_cpu_Adr(24 downto 23) & "00" & ram_cpu_Adr(20 downto 0);
+
+   ss_irq    <= ss_req and ss_quiet and not ss_mode;
+   ss_status_int <= ss_status(7 downto 3) & ss_quiet & ss_status(1 downto 0);
+   ss_cmd    <= ss_cmd_int;
+   ss_cmd_we <= ss_cmd_we_int;
+
+   process (clk1x)
+   begin
+      if rising_edge(clk1x) then
+         ss_iec_1 <= dbg_sr(0);
+         -- not the SPU's SS_idle: on the Pocket (SPU RAM in SDRAM, every voice paced to 24 clocks) its engine
+         -- barely keeps up with its sample periods, so that condition (IDLE before tick 760, nothing stashed)
+         -- does not come; the routine lets the SPU run on for ~7.8 sample periods (its transfer FIFO drains) and
+         -- holds it in IDLE instead. Not the CD's SS_idle either: cd_top's ss_quiet is the CD's condition (SS_idle
+         -- also waits for the sector fetch, which can wait for APF, and for no drive event within 1024 clocks,
+         -- which never comes while ss_hold keeps the drive's event waiting at 0)
+         ss_quiet <= SS_Idle_gpu and SS_Idle_mdec and SS_idle_pad and SS_idle_irq and SS_idle_cpu and
+                     SS_idle_gte and SS_idle_dma and ss_quiet_cd;
+         if (reset_intern = '1') then
+            ss_mode    <= ss_restore;
+            ss_freeze  <= ss_restore;
+            ss_spuhold <= ss_restore;
+         else
+            if (ss_taken = '1') then
+               ss_mode   <= '1';
+               ss_freeze <= '1';   -- in the same clock: the CD and the timers stop where the snapshot condition held
+            elsif (dbg_sr(0) = '1' and ss_iec_1 = '0') then   -- SR.IEc set again: rfe at the end of the routine
+               ss_mode <= '0';
+            end if;
+            -- control byte bit 7: ss_freeze <= bit 6, ss_spuhold <= bit 5
+            if (ss_cmd_we_int = '1' and ss_cmd_int(7) = '1') then
+               ss_freeze  <= ss_cmd_int(6);
+               ss_spuhold <= ss_cmd_int(5);
+            end if;
+         end if;
+      end if;
+   end process;
    
    process (clk1x)
    begin
@@ -1408,6 +1473,8 @@ begin
       bus_read             => bus_tmr_read,     
       bus_write            => bus_tmr_write,       
       bus_dataRead         => bus_tmr_dataRead,
+      ss_mode              => ss_mode,
+      ss_freeze            => ss_freeze,
       
 -- synthesis translate_off
       export_t_current0    => export_t_current0,
@@ -1430,6 +1497,10 @@ begin
       clk1x                => clk1x,
       ce                   => ce,   
       reset                => reset_intern,
+      ss_mode              => ss_mode,
+      ss_quiet             => ss_quiet_cd,
+      ss_freeze            => ss_freeze,
+      ss_hold              => ss_req,
      
       INSTANTSEEK          => INSTANTSEEK,
       FORCECDSPEED         => FORCECDSPEED,
@@ -1560,6 +1631,7 @@ begin
       bus_write            => bus_gpu_write,    
       bus_dataRead         => bus_gpu_dataRead, 
       bus_stall            => bus_gpu_stall, 
+      ss_mode              => ss_mode,
       
       dmaOn                => dmaOn,
       gpu_dmaRequest       => gpu_dmaRequest,  
@@ -1642,6 +1714,7 @@ begin
       bus_read             => bus_mdec_read,     
       bus_write            => bus_mdec_write,    
       bus_dataRead         => bus_mdec_dataRead, 
+      ss_mode              => ss_mode,
       
       dmaWriteRequest      => mdec_dmaWriteRequest,
       dmaReadRequest       => mdec_dmaReadRequest, 
@@ -1693,7 +1766,9 @@ begin
       bus_dataWrite        => bus_spu_dataWrite,
       bus_read             => bus_spu_read,     
       bus_write            => bus_spu_write,    
-      bus_dataRead         => bus_spu_dataRead, 
+      bus_dataRead         => bus_spu_dataRead,
+      ss_mode              => ss_mode,
+      ss_hold              => ss_spuhold, 
       
       spu_dmaRequest       => spu_dmaRequest, 
       dma_read             => DMA_SPU_readEna,      
@@ -1744,11 +1819,16 @@ begin
       ce                   => ce,   
       reset                => reset_intern,
       
-      bus_addr             => bus_exp2_addr,     
+      bus_addr             => bus_exp2_addr,
       bus_dataWrite        => bus_exp2_dataWrite,
-      bus_read             => bus_exp2_read,     
-      bus_write            => bus_exp2_write,    
-      bus_dataRead         => bus_exp2_dataRead
+      bus_read             => bus_exp2_read,
+      bus_write            => bus_exp2_write,
+      bus_dataRead         => bus_exp2_dataRead,
+
+      ss_mode              => ss_mode,
+      ss_status            => ss_status_int,
+      ss_cmd               => ss_cmd_int,
+      ss_cmd_we            => ss_cmd_we_int
    );
 
    imemorymux : entity work.memorymux
@@ -1906,6 +1986,12 @@ begin
       SS_rden_SDRam        => SS_rden(16)
    );
    
+   -- a save-state restore boot holds the CPU in reset through the whole reset sequence: between its reset pulses the
+   -- CPU would run the routine's first instructions while the sequencer uses the memories (fetches went wrong in
+   -- simulation: a reserved-instruction exception into the BIOS handler, which wrote the restored RAM); without the
+   -- memory clear that follows on a normal boot, nothing would undo it
+   cpu_reset <= reset_intern or (ss_restore and savestate_busy);
+
    icpu : entity work.cpu
    port map
    (
@@ -1913,7 +1999,7 @@ begin
       clk2x             => clk2x,
       clk3x             => clk3x,
       ce                => ce,   
-      reset             => reset_intern,
+      reset             => cpu_reset,
       
       TURBO             => TURBO_COMP,
       TURBO_CACHE       => TURBO_CACHE,
@@ -1922,7 +2008,11 @@ begin
       irqRequest        => irqRequest,
       dmaStallCPU       => dmaStallCPU,
       cpuPaused         => cpuPaused,
-      
+
+      ss_irq            => ss_irq,
+      ss_restore        => ss_restore,
+      ss_taken          => ss_taken,
+
       error             => errorCPU,
       error2            => errorCPU2,
          
@@ -2176,6 +2266,7 @@ begin
       clk2xIndex              => clk2xIndex,
       ce                      => ce,
       reset_in                => reset_in,
+      skip_clear              => ss_restore,
       reset_out               => reset_intern,
       ss_reset                => SS_reset,
       

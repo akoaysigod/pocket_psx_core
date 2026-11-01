@@ -989,3 +989,106 @@ clk2x -0.47 (85C) / -0.98 (0C): still only the GPU VRAM wrap-length path (gpu.vh
   perf4ec_sdc_s1, bitstream checksum 0x082CA109 vs 0x082CA200 from the APF build ID ROM only (build_id.mif: date,
   time, unique ID). -> releases/akoaysigod.PSX_0.2_v02_s1.zip. The testbenches still default to the 0.1.4 path
   (CDC false), as does pocket/sim/boot (vram_psram on clk2x).
+
+## 2026-10-29/30: save states (branch ss-feasibility from main-work 1d2a8b6; integration branch ss-speed = + speed-settings)
+
+Design and status: docs/savestates.md. The feasibility pass (prototype hardware, fit 18,198 ALMs) was followed by the
+implementation:
+- pocket/ss/ss_routine.s, the save / restore routine (MIPS I, ~1,200 words), assembled with Homebrew LLVM's llvm-mc
+  (pocket/ss/build.sh; the binary is shipped as data slot 3, pocket/dist/Assets/psx/akoaysigod.PSX/ss_routine.bin).
+  Runs from the cached alias after its entry (uncached, the 68 KB on-chip SPU RAM copy took ~70 ms each way).
+- CD controller: freeze at a quiet clock (no pulse, no engine start), register file window, firmware collect / apply
+  runs (cd_fw.py 1,895 -> 1,940 words; ss-speed 1,935); quiet also needs cmd_busy low. Synthesis +119 ALUTs (engine
+  +92: the register file's second port).
+- Synthesis ss_hw2 (CD part, 128 KB state block window): 27,532 ALUTs, ALM estimate 17,900 (prototype ss_hw1 27,398 /
+  17,828; main 26,698 / 17,268).
+- pocket/sim/pocket_ss (new): pocket_psx with a stub core. Found and fixed: APF acks set and cleared in the same
+  clock (APF would hang on the first save / load); state block at SDRAM 0x210000 not aligned to its 128 KB (moved to
+  0x220000); the save-state reader's wait state counted as loader busy, i.e. core reset, on every APF read during a
+  save. By reading: ch3_ready reached the SPU RAM port while frozen (gated). PASS on both branches (ss-speed: with
+  the Pocket menu open during the load and the save).
+- pocket/sim/pocket_memcard: PASS on main and the branch (default path; CDC=true fails on main too).
+- pocket/sim/boot: FAST_RESET, SS_SAVE_MS / SS_LOAD / SS_VERIFY / SS_DUMP; full MDEC as in the qip (mdec_black was
+  still swapped in). sim/cd_equiv: SSMS (save / reset / restore of the new controller mid-script, CPUSRC=1).
+- Merge of speed-settings (ss-speed): pause = menu or save state, the menu pause yields while a state is saved or
+  loaded; allow_speedhack kept in the CD snapshot.
+- sim/cd_equiv after the CD changes: FREEZE script 0 (BIOS-like boot, cycle exact against the reference): PASS,
+  0 mismatches (44 interrupts, 16 sectors). SSMS=550 on script 1 (SotN-like loading + XA, CPUSRC=1): the CD save,
+  controller reset and restore mid-script give the same summary as the run without it (74 interrupts, 46 sectors,
+  data checksum 68225, 61 sector requests, audio checksum 415942, no XA underrun); everything 2,484 clocks later.
+- Restore: acknowledges CD interrupts while it waits for the CD freeze (a reset leaves nothing pending on the Pocket
+  -- the lid-open INT5 only comes from trackinfo writes -- but the wait must not depend on that).
+- pocket_psx: a frozen save waited only ~2 s for APF's read of the 4 MB window (>= 1.2 s at the bridge's rate, plus
+  whatever the Pocket does in between); now ~16 s. Request / load timeouts stay ~2 s.
+- cpu.vhd: ss_irq was missing from the interrupt check's sensitivity list (simulation only).
+- Fits go through the Saturn session's Docker lock (saturn/work/tools/dlock.sh), one Quartus job at a time.
+- The first full fit (ss-speed with the CD part, seeds 1 and 2) did not fit: 18,415 ALMs needed, 1,861 of 1,848
+  LABs (the prototype fits had 18,198 / 18,223 and 1,846 / 1,847 LABs; the CD part is ~92 ALMs of the growth).
+  Area found:
+  - pocket_cd's sector ring (4,704 x 32) was sliced 256 x 40 into 19 M10K blocks to save blocks, which needed a
+    19:1 output mux on all 32 bits plus write decoders: 224 ALUTs, ~206 ALMs. Sliced 8K x 1 it takes 32 blocks
+    (of 33 free) and no mux. (This is the "pocket_cd ring banks" item of the lost sotn-fable pass.)
+  - gte_UNRDivide's 257-entry table was LUT logic (ROM inference wants a power-of-two depth): a 512-entry M10K ROM,
+    checked bit-exact against the old divider (every divisor, 334,000 random operands).
+  - The SPU window reads voice records straight from the record RAM instead of loading them into the voice
+    registers first.
+  - Not usable: moving MLAB RAMs to M10K (RamMLAB reads asynchronously); upstream's save-state write paths (pruned
+    in the base build, so reusing them would add them back); savestates_reset.vhd is already a reset-only variant.
+- Boot sim, save at 100 ms: the save waited, because the SPU was never idle during the shell's SPU RAM clear. A probe
+  of every idle condition while a save was pending showed interrupts enabled and everything else idle; FAST_SHELL's
+  shortened busy-wait (240 -> 24) refills the SPU's transfer FIFO faster than it drains (24 halfwords per sample
+  period). With the BIOS's own delay the FIFO drains between blocks.
+- No-save regression (main vs the branch, same sim settings): identical reports through 118 ms (PC, frames, SPU
+  writes, the last 8 memory accesses). sim/cd_equiv FREEZE on ss-speed: scripts 1, 2, 3 PASS (0 mismatches).
+- The save never started because the SPU's SS_idle never held (A2: 0 clocks in every 2 ms window from 100 to
+  295 ms, interrupts enabled and every other module idle). A second probe inside the SPU (ss-speed run): the state
+  machine was IDLE in 81 of 67,738 clocks and stashedSamples sat at its maximum, 15: the engine (every voice paced
+  to 24 clocks with SPU RAM in SDRAM) did not keep up, so IDLE-before-tick-760-with-nothing-stashed never came.
+  Fixed by leaving the SPU out of the save quiet condition; the routine already lets the SPU run on and holds it in
+  IDLE, and now waits ~7.8 sample periods first so the 128-entry transfer FIFO drains. (The earlier explanation,
+  FAST_SHELL's SPU clear keeping the FIFO full, was only part of it.)
+- With the area changes the ss-speed fit needs 17,970 ALMs (was 18,415), 1,838 LABs, 289 M10K; seed 1 missed setup
+  by 0.045 ns on clk3x (the VRAM / PSRAM side, untouched tonight): a seed search on the final design follows.
+- Boot sim A3 (quiet fix): the save started at 100 ms and collected (24 ms, mostly the on-chip SPU RAM), then stopped
+  at "captured": the core's pause also waits for every SS_idle, and the held SPU kept its 15 stashed samples. Fixed:
+  held in IDLE the SPU is idle. On the Pocket this would have hung a save whenever the SPU was behind at the hold.
+- With the SPU out of the quiet condition the interrupt could come between blocks of an SPU DMA upload; the routine
+  now retries while DMA channel 4 is enabled (its settle loop would otherwise restart the transfer mid-save).
+- The fit of the design before these two fixes (quiet fix only) gave seed 1 -0.001 ns (one hold path, core clock
+  0), seed 2 -0.332 ns: stopped for the fixed design's seed search.
+- Round trip A4 -> B4 (and the same on ss-speed, spA3 -> spB3, identical results): the save enters at 100 ms,
+  captures at 124.4 ms (24 ms, mostly the on-chip SPU RAM), the core pauses, the memories are dumped, the release
+  comes at the next frame and the shell runs on. The restore from that dump is done at 36.2 ms and the shell runs
+  on. compare.py, saved block vs the restored state collected again: identical memory control, cache control, GTE
+  control, I_STAT / I_MASK, DMA, timers, joypad, CD (incl. the controller's register file), SPU hidden state and
+  voice records, scratchpad, the 68 KB of on-chip SPU RAM, SPU RAM, both VRAM halves. Differences:
+  - GTE LZCR 0 -> 0x20 (the restore writes LZCS = 0, which yields 32 as on hardware; the saved 0 was a reset value);
+  - GPUSTAT bits 31 / 13 (video timing phase: not saved, as documented);
+  - MDECSTAT words remaining 0xFFFF -> 0x000F (this MDEC leaves 16 after a table upload, "as emulators do");
+  - KEYOFF's read-back value (the restore does not write KEYON / KEYOFF);
+  - 4 words of main RAM: the BIOS thread context's at / v0 / v1 / ra. A trace of the restore boot showed the CPU
+    running the routine's entry between the reset sequence's pulses, a reserved-instruction exception (a fetch gone
+    wrong while the sequencer used the memories) and the BIOS handler writing RAM until the core paused. Fixed: a
+    restore boot holds the CPU in reset through the whole sequence.
+  With the fix (B7, and on ss-speed's fitted commit 6134206 spA3 -> spB4): main RAM identical, only the four
+  register differences above.
+- Timing of the final design (ss-speed 6134206), setup met on every seed; fast 0C hold: seed 1 -0.002 ns (clk1x),
+  seed 2 -0.023 ns, seed 3 -0.045 ns (clk2x, TNS -0.142). Seed 4 meets every corner (setup +0.061 ns, hold
+  +0.017 ns; 18,000 ALMs, 1,840 LABs, 289 M10K): the test build, releases/akoaysigod.PSX_0.2_ss-speed-6134206_seed4.zip.
+- The Docker job lock (saturn/work/tools/dlock.sh) is a spin lock with 15 s polls: the seed loop asked again as
+  soon as a build ended, won it every time and kept the Saturn session's three builds waiting ~50 minutes. Paused
+  after seed 4; a later build should first wait until no other session's job is waiting.
+
+## 2026-10-31 / 11-01: save states on hardware, version 0.3
+
+- Resident Evil Director's Cut and Einhänder: every save failed (the routine never entered). The diagnostics page:
+  of cd_top's quiet conditions only "data fifo empty" never held (these games leave a sector's rest unread for
+  seconds). 963385f: the data fifo is part of a state (window control 0x40, state block version 2; version 1
+  states still load). sim/cd_equiv SPLIT / SSFIFO: a save with 300 bytes in the fifo gives the same data checksum
+  as no save; SSNOFIFO (the bytes not put back) differs.
+- Build ssf2 (963385f): seeds 1-8 missed timing, every failing path outside cd_top (GPU, VRAM, SDRAM, DMA, MiSTer's
+  savestates reset crossing); seed 9 met every corner (worst +0.003 ns; 18,074 ALMs, 1,842 LABs, 289 M10K).
+- Hardware (2026-11-01): save states work in SotN, Resident Evil DC and Einhänder; states saved by the previous
+  test build (version 1) load.
+- Version 0.3 (core.json, info.txt, README status): the seed 9 bitstream repackaged,
+  releases/akoaysigod.PSX_0.3_ss-feasibility-963385f_seed9.zip. See docs/savestates.md.

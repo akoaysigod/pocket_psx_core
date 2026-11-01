@@ -88,6 +88,8 @@ entity dma is
       SS_rden              : in  std_logic;
       SS_DataRead          : out std_logic_vector(31 downto 0);
       SS_idle              : out std_logic;
+      
+      ss_mode              : in  std_logic := '0';   -- Pocket save states: DICR writes load the IRQ flags
       -- Pocket bring-up: channel 2 CHCR, state / channel / working address, DICR
       debug_dma            : out std_logic_vector(95 downto 0)
    );
@@ -442,6 +444,9 @@ begin
                         DICR(          15) <= bus_dataWrite(15);
                         DICR(23 downto 16) <= unsigned(bus_dataWrite(23 downto 16));
                         DICR_IRQs          <= DICR_IRQs and (not unsigned(bus_dataWrite(30 downto 24)));
+                        if (ss_mode = '1') then   -- save-state routine: load the flags
+                           DICR_IRQs <= unsigned(bus_dataWrite(30 downto 24));
+                        end if;
                         if (bus_dataWrite(15) = '1') then  -- force bit not used in duckstation, why?
                            irqOut <= '1';
                         end if;

@@ -17,7 +17,14 @@ entity ram_model is
       FAST_SHELL : boolean := false;
       -- with FAST_SHELL: the shell's boot intro (80040490, the SCE logo animation, ~10 s of console time) returns
       -- at once, so the main menu comes right after the shell's initialisation
-      SKIP_INTRO : boolean := false
+      SKIP_INTRO : boolean := false;
+      -- save states (pocket/ss): the routine image (hex words) at 0x200000; a dump of 0x000000-0x2FFFFF (main RAM,
+      -- routine, state blocks) loaded at time 0; the state block's self-check flag set after that load; the file
+      -- written at a rising edge of dump
+      ROUTINE_FILE : string := "";
+      LOAD_FILE    : string := "";
+      SET_VERIFY   : boolean := false;
+      DUMP_FILE    : string := "ram_dump.hex"
    );
    port
    (
@@ -43,7 +50,8 @@ entity ram_model is
       ram_dmafifo_data  : in  std_logic_vector(31 downto 0);
       ram_dmafifo_empty : in  std_logic;
       ram_dmafifo_read  : out std_logic := '0';
-      preload_shell     : in  std_logic := '0'
+      preload_shell     : in  std_logic := '0';
+      dump              : in  std_logic := '0'
    );
 end entity;
 
@@ -110,6 +118,36 @@ begin
       end loop;
       file_close(f);
       report "BIOS loaded: " & integer'image((a - BIOS_ADDR) / 4) & " words";
+      if (LOAD_FILE /= "") then
+         file_open(st, f, LOAD_FILE, read_mode);
+         assert st = open_ok report "cannot open " & LOAD_FILE severity failure;
+         a := 0;
+         while not endfile(f) loop
+            readline(f, l);
+            hread(l, w);
+            write32(a, w, "1111");
+            a := a + 4;
+         end loop;
+         file_close(f);
+         report "RAM loaded from " & LOAD_FILE & ": " & integer'image(a / 4) & " words";
+         if SET_VERIFY then
+            write32(16#220008#, x"00000001", "1111");
+         end if;
+      end if;
+      -- after a loaded state, as on the Pocket (the routine's slot is loaded at start; the state window skips it)
+      if (ROUTINE_FILE /= "") then
+         file_open(st, f, ROUTINE_FILE, read_mode);
+         assert st = open_ok report "cannot open " & ROUTINE_FILE severity failure;
+         a := 16#200000#;
+         while not endfile(f) loop
+            readline(f, l);
+            hread(l, w);
+            write32(a, w, "1111");
+            a := a + 4;
+         end loop;
+         file_close(f);
+         report "save-state routine loaded: " & integer'image((a - 16#200000#) / 4) & " words";
+      end if;
       if FAST_SHELL then
          -- the memcpy call (jal BFC02B50 = 0FF00AD4) becomes a NOP
          assert data(BIOS_ADDR + 16#700C#) = 16#D4# and data(BIOS_ADDR + 16#700F#) = 16#0F# report "unexpected BIOS at 700C" severity failure;
@@ -119,7 +157,7 @@ begin
             data(16#30000# + i) := data(BIOS_ADDR + 16#18000# + i);
          end loop;
          -- the shell's busy-wait between SPU RAM clear blocks (80054140: count to 240, twice "slti at,rN,240")
-         -- counts to 24 instead: still longer than the SPU needs for a 32-halfword block
+         -- counts to 24 instead (the clear then ends at ~240 ms)
          assert data(16#54150#) = 16#F0# and data(16#54188#) = 16#F0# report "unexpected shell code at 80054150" severity failure;
          data(16#54150#) := 16#18#;
          data(16#54188#) := 16#18#;
@@ -132,6 +170,27 @@ begin
          end if;
       end if;
       wait;
+   end process;
+
+   -- save states: 0x000000-0x2FFFFF to DUMP_FILE
+   process (dump)
+      file f      : text;
+      variable st : file_open_status;
+      variable l  : line;
+      variable w  : std_logic_vector(31 downto 0);
+   begin
+      if rising_edge(dump) then
+         file_open(st, f, DUMP_FILE, write_mode);
+         for i in 0 to 16#300000# / 4 - 1 loop
+            for b in 0 to 3 loop
+               w(b * 8 + 7 downto b * 8) := std_logic_vector(to_unsigned(data(i * 4 + b), 8));
+            end loop;
+            hwrite(l, w);
+            writeline(f, l);
+         end loop;
+         file_close(f);
+         report "RAM dumped to " & DUMP_FILE;
+      end if;
    end process;
 
    process (clk)

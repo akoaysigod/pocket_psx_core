@@ -39,7 +39,15 @@ entity cd_engine is
       io_rdata  : in  std_logic_vector(31 downto 0);
       io_waddr  : out unsigned(4 downto 0);
       io_wdata  : out std_logic_vector(31 downto 0);
-      io_we     : out std_logic
+      io_we     : out std_logic;
+
+      -- Pocket save states: while the engine is idle, the save-state routine reads (ss_q, at ss_idx) and writes
+      -- (ss_we) the register file through cd_ctrl
+      ss_en     : in  std_logic := '0';
+      ss_idx    : in  unsigned(5 downto 0) := (others => '0');
+      ss_we     : in  std_logic := '0';
+      ss_wdata  : in  std_logic_vector(31 downto 0) := (others => '0');
+      ss_q      : out std_logic_vector(31 downto 0)
    );
 end entity;
 
@@ -79,6 +87,9 @@ architecture arch of cd_engine is
 
    signal rf_q     : std_logic_vector(31 downto 0);
    signal rf_we    : std_logic;
+   signal rf_wdata : std_logic_vector(31 downto 0);
+   signal rf_waddr : std_logic_vector(5 downto 0);
+   signal rf_raddr : std_logic_vector(5 downto 0);
    signal opnd     : unsigned(31 downto 0);
    signal src      : unsigned(31 downto 0);
 
@@ -129,12 +140,16 @@ begin
    port map
    (
       inclock   => clk,
-      wren      => rf_we,
-      data      => std_logic_vector(result),
-      wraddress => std_logic_vector(wa(5 downto 0)),
-      rdaddress => std_logic_vector(r(5 downto 0)),
+      wren      => rf_we or ss_we,
+      data      => rf_wdata,
+      wraddress => rf_waddr,
+      rdaddress => rf_raddr,
       q         => rf_q
    );
+   rf_wdata <= ss_wdata when (ss_we = '1') else std_logic_vector(result);
+   rf_waddr <= std_logic_vector(ss_idx) when (ss_we = '1') else std_logic_vector(wa(5 downto 0));
+   rf_raddr <= std_logic_vector(ss_idx) when (ss_en = '1' and running = '0') else std_logic_vector(r(5 downto 0));
+   ss_q     <= rf_q;
 
    rf_we <= running and isStore and not wa(6);
    io_raddr <= r(4 downto 0);

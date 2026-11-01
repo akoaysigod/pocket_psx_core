@@ -16,6 +16,15 @@ entity cd_top is
       clk_engine           : in  std_logic := '0';
       eng_busy             : out std_logic;
       ce                   : in  std_logic;
+      -- Pocket save states: ss_quiet = nothing in flight (no command, response, interrupt or buffered sector; a
+      -- sector fetch may be, and the data fifo may hold bytes, see "save states" below), the only moment a snapshot
+      -- is taken; while the routine runs (ss_mode) the write-only volume / mute registers read back
+      -- ss_freeze (set by the routine): the controller (cd_ctrl) stops at the next clock with nothing in flight; in
+      -- ss_mode the routine reads / writes the controller engine's register file (see cd_ctrl, "save states")
+      ss_mode              : in  std_logic := '0';
+      ss_quiet             : out std_logic := '0';
+      ss_freeze            : in  std_logic := '0';
+      ss_hold              : in  std_logic := '0';   -- a save is asked for: the drive starts no sector read (cd_ctrl)
       reset                : in  std_logic;
       
       INSTANTSEEK          : in  std_logic;
@@ -552,6 +561,20 @@ architecture arch of cd_top is
    signal ctrl_driveState : std_logic_vector(3 downto 0);
    signal ctrl_cdda_out8  : std_logic;
    signal ctrl_quiet      : std_logic;
+   -- save states
+   signal ss_quiet_now    : std_logic;
+   signal ctrl_calm       : std_logic;
+   signal cd_frozen       : std_logic := '0';
+   signal ce_ctrl         : std_logic;
+   signal ss_ctl_we       : std_logic := '0';
+   signal ss_data_we      : std_logic := '0';
+   signal ss_wbyte        : std_logic_vector(7 downto 0) := (others => '0');
+   signal ss_rd           : std_logic := '0';
+   signal ss_rbyte        : std_logic_vector(7 downto 0);
+   signal ss_dsel         : std_logic := '0';   -- window control 0x40: the data fifo's bytes instead of the register file
+   signal ss_fifo_we      : std_logic := '0';
+   signal FifoData_WrM    : std_logic;
+   signal FifoData_DinM   : std_logic_vector(7 downto 0);
    signal irqPulse        : std_logic := '0';
    signal irqHeld         : std_logic := '0';
    signal irqFlagShown    : std_logic_vector(4 downto 0) := (others => '0');
@@ -580,8 +603,8 @@ begin
       clk      => clk1x,     
       reset    => FifoData_reset,   
                 
-      Din      => FifoData_Din,     
-      Wr       => FifoData_Wr,      
+      Din      => FifoData_DinM,     
+      Wr       => FifoData_WrM,      
       Full     => open,    
       NearFull => open,
 
@@ -590,7 +613,13 @@ begin
       Empty    => FifoData_Empty   
    );
    
-   FifoData_Rd <= ce when (FifoData_Empty = '0' and bus_read = '1' and bus_addr(3 downto 0) = "0010") else
+   -- save states: the routine reads a game's unread bytes out (ss_dsel, index 0: 1F801802 reads) and writes them
+   -- back (index 1: 1F801801 writes), the sector copy is idle then
+   FifoData_WrM  <= FifoData_Wr or ss_fifo_we;
+   FifoData_DinM <= ss_wbyte when (ss_fifo_we = '1') else FifoData_Din;
+
+   FifoData_Rd <= ce when (FifoData_Empty = '0' and bus_read = '1' and bus_addr(3 downto 0) = "0010" and
+                           (ss_mode = '0' or (ss_dsel = '1' and CDROM_STATUS(1 downto 0) = "00"))) else
                   ce when (FifoData_Empty = '0' and dma_read = '1') else 
                   '0';
    
@@ -620,10 +649,15 @@ begin
          FifoData_reset    <= '0';
          FifoResponse_Rd   <= '0';
          FifoParam_Wr      <= '0';
+         ss_ctl_we         <= '0';
+         ss_data_we        <= '0';
+         ss_fifo_we        <= '0';
+         ss_rd             <= '0';
       
          if (reset = '1') then
             
             FifoData_reset  <= '1';
+            ss_dsel         <= '0';
             
             irqTimeout      <= 0;
             
@@ -693,7 +727,10 @@ begin
                         
                      when "01" =>
                         case (bus_addr) is
-                           when x"1" => -- sound map write -> do nothing
+                           when x"1" => -- sound map write -> do nothing; save states: register file / data fifo byte
+                              ss_data_we <= ss_mode and not ss_dsel;
+                              ss_fifo_we <= ss_mode and ss_dsel;
+                              ss_wbyte   <= bus_dataWrite;
                            when x"2" =>
                               CDROM_IRQENA <= bus_dataWrite(4 downto 0);
                               
@@ -708,7 +745,12 @@ begin
                      
                      when "10" =>
                         case (bus_addr) is
-                           when x"1" => -- sound map coding info write -> do nothing
+                           when x"1" => -- sound map coding info write -> do nothing; save states: window control byte
+                              ss_ctl_we  <= ss_mode;
+                              ss_wbyte   <= bus_dataWrite;
+                              if (ss_mode = '1') then
+                                 ss_dsel <= bus_dataWrite(6) and not bus_dataWrite(7);   -- 0x40 (cd_ctrl: index 0)
+                              end if;
                            when x"2" => cdvol_next00 <= bus_dataWrite;
                            when x"3" => cdvol_next01 <= bus_dataWrite;
                            when others => null;
@@ -734,7 +776,35 @@ begin
             
             end if; -- end bus write
          
-            if (bus_read = '1') then
+            if (bus_read = '1' and ss_mode = '1' and bus_addr = x"0") then
+               -- save states: bit 2 = the controller is not frozen yet or its engine runs
+               bus_dataRead <= CDROM_STATUS(7 downto 3) & (eng_busy or not cd_frozen) & CDROM_STATUS(1 downto 0);
+            elsif (bus_read = '1' and ss_mode = '1' and CDROM_STATUS(1 downto 0) = "00" and bus_addr = x"2") then
+               -- save states: the next byte of the register file, or with ss_dsel of the data fifo
+               if (ss_dsel = '0') then
+                  bus_dataRead <= ss_rbyte;
+                  ss_rd        <= '1';
+               elsif (FifoData_Empty = '0') then
+                  bus_dataRead <= FifoData_Dout;
+               else
+                  bus_dataRead <= (others => '0');
+               end if;
+            elsif (bus_read = '1' and ss_mode = '1' and CDROM_STATUS(1 downto 0) /= "00" and bus_addr /= x"0") then
+               -- save states (the IRQ flags are 0 at a snapshot): index 1 addr 1-3: next00 / next01 / applied 11,
+               -- index 2: next10 / next11 / mute, index 3: applied 00 / 01 / 10
+               case (std_logic_vector'(CDROM_STATUS(1 downto 0) & std_logic_vector(bus_addr(1 downto 0)))) is
+                  when "0101" => bus_dataRead <= cdvol_next00;
+                  when "0110" => bus_dataRead <= cdvol_next01;
+                  when "0111" => bus_dataRead <= cdvol_11;
+                  when "1001" => bus_dataRead <= cdvol_next10;
+                  when "1010" => bus_dataRead <= cdvol_next11;
+                  when "1011" => bus_dataRead <= "0000000" & xa_muted;
+                  when "1101" => bus_dataRead <= cdvol_00;
+                  when "1110" => bus_dataRead <= cdvol_01;
+                  when "1111" => bus_dataRead <= cdvol_10;
+                  when others => bus_dataRead <= cdvol_11;
+               end case;
+            elsif (bus_read = '1') then
                bus_dataRead <= (others => '0');
                case (bus_addr) is
                   when x"0" => 
@@ -934,6 +1004,43 @@ begin
       end if;
    end process;
 
+   -- save states: nothing in flight (no command, response, interrupt or buffered sector, engine idle, no sector
+   -- being processed or copied); the controller freezes (cd_ctrl's ce low) at the first such clock without a pulse or
+   -- an engine start once the routine asks for it (ss_freeze), so its state holds still for the routine from then on.
+   -- The data fifo may hold bytes: games leave a sector's rest unread for seconds (Resident Evil, Einhänder; on
+   -- hardware a save never found it empty), the routine saves and restores them (ss_dsel).
+   -- A sector fetch may be in flight: it can wait for APF, and APF delivers nothing while it waits for the save (on
+   -- hardware the drive never came to rest during music). The datapath (lastReadSector, the raw sector, its
+   -- subchannel and track) is not part of a state: when the freeze ends the last read's sector is fetched again,
+   -- which puts it back after a load and finds it cached after a save (see the data processing below).
+   process (all)
+   begin
+      ss_quiet_now <= '0';
+      if (ctrl_quiet = '1' and eng_busy = '0' and CDROM_IRQFLAG = "00000" and pendingDriveIRQ = "00000" and
+          sectorProcessState = SPROC_IDLE and copyState = COPY_IDLE and
+          readSubchannelState = SSUB_IDLE and cmdPending = '0' and cmd_busy = '0' and
+          FifoParam_Empty = '1' and FifoResponse_Empty = '1' and (working = '0' or workDelay > 16)) then
+         ss_quiet_now <= '1';
+         for i in 0 to 7 loop
+            if (sectorBufferSizes(i) /= 0) then
+               ss_quiet_now <= '0';
+            end if;
+         end loop;
+      end if;
+   end process;
+
+   process (clk1x)
+   begin
+      if rising_edge(clk1x) then
+         if (ss_freeze = '0') then
+            cd_frozen <= '0';
+         elsif (ss_quiet_now = '1' and ctrl_calm = '1') then
+            cd_frozen <= '1';
+         end if;
+      end if;
+   end process;
+   ce_ctrl <= ce and not cd_frozen;
+
    -- the engine's clock is mapped straight onto the port (no signal in between: no delta cycle against clk1x)
    gctrl_sim : if SIM_FREEZE generate
       ictrl : entity work.cd_ctrl
@@ -968,7 +1075,7 @@ begin
          processCDDASector => processCDDASector, processSeekHeader => processSeekHeader,
          clearSectorBuffers => clearSectorBuffers, triggerUpdateSubchannel => triggerUpdateSubchannel,
          handleDrive => handleDrive, newCD_1 => newCD_1,
-         eng_busy => eng_busy, quiet => ctrl_quiet
+         eng_busy => eng_busy, quiet => ctrl_quiet, calm => ctrl_calm
       );
    end generate;
    gctrl : if not SIM_FREEZE generate
@@ -976,7 +1083,7 @@ begin
       generic map (SIM_FREEZE => false)
       port map
       (
-         clk => clk1x, ce => ce, reset => reset, hasCD => hasCD, region => region, SS_reset => SS_reset, SS_wren => SS_wren,
+         clk => clk1x, ce => ce_ctrl, reset => reset, hasCD => hasCD, region => region, SS_reset => SS_reset, SS_wren => SS_wren,
          dma_read => dma_read,
          beginCommand => beginCommand, newCmd => newCmd, CDROM_IRQFLAG => CDROM_IRQFLAG, ackRead_valid => ackRead_valid,
          ackPendingIRQ => ackPendingIRQ, ackPendingSector => ackPendingSector, pendingDriveResponse => pendingDriveResponse,
@@ -1004,7 +1111,9 @@ begin
          processCDDASector => processCDDASector, processSeekHeader => processSeekHeader,
          clearSectorBuffers => clearSectorBuffers, triggerUpdateSubchannel => triggerUpdateSubchannel,
          handleDrive => handleDrive, newCD_1 => newCD_1,
-         eng_busy => eng_busy, quiet => ctrl_quiet
+         eng_busy => eng_busy, quiet => ctrl_quiet,
+         ss_mode => ss_mode, ss_ctl_we => ss_ctl_we, ss_data_we => ss_data_we, ss_wbyte => ss_wbyte, ss_rd => ss_rd,
+         ss_rbyte => ss_rbyte, drive_hold => ss_hold, calm => ctrl_calm
       );
    end generate;
 
@@ -1161,7 +1270,8 @@ begin
          if (reset = '1') then
          
             cd_hps_req           <= '0';
-            
+            readOnDisk_buffer    <= '0';   -- (a read asked for before the reset: a save state's load)
+
             sectorFetchState     <= SFETCH_IDLE;
             sectorProcessState   <= SPROC_IDLE;
             copyState            <= COPY_IDLE;
@@ -1221,7 +1331,7 @@ begin
                readOnDisk_buffer <= '1';
                readLBA_buffer    <= readLBA;
             end if;
-      
+
             case (sectorFetchState) is
             
                when SFETCH_IDLE =>
@@ -1340,9 +1450,17 @@ begin
                      if (fetchcount = 3 and checkData(31 downto 24) /= x"02") then headerDataCheck <= '0'; headerDataSector <= '0'; end if;
                      if (fetchcount = 4 and checkData(22) = '1' and checkData(18) = '1' and headerDataCheck = '1') then headerIsData <= '0'; end if;
                   end if;
-                  
+
             end case;
-            
+
+            -- save states: a freeze ends, the last read's sector again (readLBA is the LBA of the last readOnDisk;
+            -- after a load the datapath is reset and the controller put back, after a save the fetch skips it).
+            -- After the case: a fetch starting in this clock takes the buffered LBA, this one follows it.
+            if (cd_frozen = '1' and ss_freeze = '0') then
+               readOnDisk_buffer <= '1';
+               readLBA_buffer    <= readLBA;
+            end if;
+
             -- reset cached sector on CD switch
             if (newCD = '1' and newCD_1 = '0') then
                cd_hps_lba <= (others => '1');
@@ -1910,6 +2028,9 @@ begin
          end if;
          
          Pause_idle_cd <= '1';
+         
+         -- save states: a snapshot only while nothing is in flight
+         ss_quiet <= ss_quiet_now;
          
          if (ss_timeout(23) = '0') then
             ss_timeout <= ss_timeout + 1;

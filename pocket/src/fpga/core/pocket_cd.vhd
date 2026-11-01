@@ -20,7 +20,8 @@
 -- the same track are read ahead, up to KMAX per command (fewer commands, each one's overhead counts once). A request
 -- found in the ring is sent at once; one in a read still running waits for it; any other (a seek, another track)
 -- starts the ring anew with a single-sector read, so it is sent as soon as possible. The commands run one at a time
--- (cmd_st) beside the request handling; a sent sector's slot is free again.
+-- (cmd_st) beside the request handling; a sent sector's slot is free again. A request the core withdraws before
+-- its sector is sent (a reset) is dropped.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -137,11 +138,12 @@ architecture arch of pocket_cd is
    signal buf_q      : std_logic_vector(31 downto 0) := (others => '0');
    type tRing is array (0 to SLOTS * (SECTOR_BYTES / 4) - 1) of std_logic_vector(31 downto 0);
    signal ring       : tRing;
-   -- M10K as 256 x 40 (19 blocks for 8 slots); left to itself Quartus took 32 for the 4704 words
+   -- M10K as 8K x 1 (32 blocks): as 256 x 40 (19 blocks) the 4704 words needed a 19:1 output mux on every bit
+   -- (224 ALUTs); the chip runs short of logic, not of M10K blocks
    attribute ramstyle  : string;
    attribute ramstyle  of ring : signal is "M10K";
    attribute max_depth : natural;
-   attribute max_depth of ring : signal is 256;
+   attribute max_depth of ring : signal is 8192;
    signal serve_base : unsigned(BUF_AW - 1 downto 0) := (others => '0');   -- first word of the sector to send (held)
 
    -- ring: sectors head_lba .. head_lba + r_cnt - 1 of track r_track in slots head_slot, head_slot + 1, ... (mod
@@ -482,7 +484,9 @@ begin
                   end if;
 
                when S_FIND =>                   -- tab_q = first LBA of track k (k = ntracks: end of disc)
-                  if (lba < unsigned(tab_q)) then
+                  if (req_s(1) = '0') then      -- withdrawn (see S_LOOK)
+                     st <= S_IDLE;
+                  elsif (lba < unsigned(tab_q)) then
                      st <= S_LOOK;              -- track k: start .. tab_q - 1
                   elsif (k = ntracks) then      -- past the last track
                      sec_zero <= '1';
@@ -494,7 +498,12 @@ begin
                   end if;
 
                when S_LOOK =>
-                  if (r_valid = '1' and r_track = k and lba >= hl and lba < hl + cnt) then
+                  if (req_s(1) = '0') then
+                     -- withdrawn before it was sent: the core was reset (a save state's load) while the sector was
+                     -- still on its way from APF; sent now, it would answer the restored core's first request.
+                     -- A command still running goes on and fills the ring.
+                     st <= S_IDLE;
+                  elsif (r_valid = '1' and r_track = k and lba >= hl and lba < hl + cnt) then
                      -- in the ring: drop the sectors before it (fewer than cnt), send it
                      d   := lba - hl;
                      hs  := hs + d(SLOT_BITS - 1 downto 0);

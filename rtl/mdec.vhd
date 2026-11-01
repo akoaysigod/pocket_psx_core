@@ -19,6 +19,7 @@ entity mdec is
       bus_read             : in  std_logic;
       bus_write            : in  std_logic;
       bus_dataRead         : out std_logic_vector(31 downto 0);
+      ss_mode              : in  std_logic := '0';   -- Pocket save states: 1F801828 / 1F80182C hidden readback
       
       dmaWriteRequest      : out std_logic;
       dmaReadRequest       : out std_logic;
@@ -297,6 +298,7 @@ architecture arch of mdec is
    signal RamSSdataA          : std_logic_vector(31 downto 0) := (others => '0');
    signal RamSSwrite          : std_logic := '0';     
    signal RamSSaddrB          : unsigned(5 downto 0) := (others => '0');
+   signal ss_idx              : unsigned(5 downto 0) := (others => '0');   -- Pocket save states: table copy index
    signal RamSSdataB          : std_logic_vector(31 downto 0); 
                               
    signal ram_SSrden          : std_logic;
@@ -590,7 +592,7 @@ begin
       q_b         => RamSSdataB
    );
    
-   RamSSaddrB <= (SS_Adr(5 downto 0) - 16) when SS_Adr < 64 else '1' & SS_Adr(4 downto 0);
+   RamSSaddrB <= ss_idx when (ss_mode = '1') else (SS_Adr(5 downto 0) - 16) when SS_Adr < 64 else '1' & SS_Adr(4 downto 0);
    
    -- RL decoding
    process (clk1x)
@@ -1339,9 +1341,18 @@ begin
                end if;
             elsif (bus_addr(3 downto 2) = "01") then
                bus_dataRead <= MDECSTAT;
+            elsif (ss_mode = '1' and bus_addr(3 downto 2) = "10") then   -- save states: table copy, next word
+               bus_dataRead <= RamSSdataB;
+               ss_idx       <= ss_idx + 1;
+            elsif (ss_mode = '1') then                                   -- save states: control bits 31:29
+               bus_dataRead <= MDECCONTROL & "00000" & x"000000";
             else
                bus_dataRead <= x"FFFFFFFF";
             end if;
+         end if;
+         -- save states: a write to 1F801828 sets the table copy's read index (0-31 quant, 32-63 scale)
+         if (ss_mode = '1' and bus_write = '1' and bus_addr(3 downto 2) = "10") then
+            ss_idx <= unsigned(bus_dataWrite(5 downto 0));
          end if;
          
       end if;

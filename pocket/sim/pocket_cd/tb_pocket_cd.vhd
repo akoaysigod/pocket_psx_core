@@ -8,6 +8,8 @@
 --    delays the rest, as the drive waits): sectors late and the total wait are reported
 --  * core side model (clk1x): reset until cd_ready, trackinfo capture, sector requests like cd_top.vhd
 --    (req + lba, req dropped when ack is seen, 16-bit words counted on cd_hps_write until ack falls)
+--  * WITHDRAW > 0: then requests dropped before their sector came (cd_top reset by a save state's load while
+--    APF still reads it), each followed by a request for another sector, which must get that one
 -- Checks: trackinfo words against MiSTer psx.cpp's layout, every 16-bit word of every requested sector.
 library ieee;
 use ieee.std_logic_1164.all;
@@ -23,6 +25,7 @@ entity tb_pocket_cd is
       MUTATION : integer := 0;     -- testbench self check: 1 = expect the wrong file offset
       LAT      : integer := 0;     -- APF read time: 0 fast (us), 1 slow SD (ms, with spikes), 2 slower
       NSTREAM  : integer := 0;     -- sectors of the double speed stream after the random requests
+      WITHDRAW : integer := 0;     -- requests withdrawn while APF reads their sector (each then another request)
       STREAM0  : integer := 20000; -- its first LBA (< 0: that many sectors before track 2, the stream crosses into it)
       SLOT_BITS : integer := 3;    -- pocket_cd's ring (generics)
       KMAX     : integer := 4;
@@ -359,6 +362,61 @@ begin
       report "DONE requests=" & integer'image(NUM_REQ) & " slot_reads=" & integer'image(reads) & " zero_sectors=" &
              integer'image(zeroes) & " word_errors=" & integer'image(errors) & " trackinfo_errors=" & integer'image(ti_err) &
              " commands=" & integer'image(cmds);
+
+      ---------------- withdrawn requests: dropped once APF's read for it has started, then one for a sector far away
+      if (WITHDRAW > 0 and LAYOUT /= 2) then
+         for n in 0 to WITHDRAW - 1 loop
+            l := 150 + ((l + 5000 + n * 777) mod (total - 160));    -- not in the ring (that holds <= 8 after a request)
+            wait until rising_edge(clk1x);
+            lba <= std_logic_vector(to_unsigned(l, 32));
+            req <= '1';
+            wait until rising_edge(clk1x) and dsr_read = '1';
+            for i in 0 to 10 loop wait until rising_edge(clk1x); end loop;
+            req <= '0';
+            for i in 0 to 200 loop
+               wait until rising_edge(clk1x);
+               if (ack = '1') then
+                  report "withdrawn request for LBA " & integer'image(l) & " still answered" severity error;
+                  errors := errors + 1;
+                  exit;
+               end if;
+            end loop;
+            l := 150 + ((l + 3000) mod (total - 160));
+            lba <= std_logic_vector(to_unsigned(l, 32));
+            req <= '1';
+            ack_seen := false;
+            nwords   := 0;
+            loop
+               wait until rising_edge(clk1x);
+               if (ack = '1' and not ack_seen) then
+                  ack_seen := true;
+                  req      <= '0';
+               elsif (ack_seen) then
+                  if (wr = '1') then
+                     t := 0;
+                     for k in 0 to NT - 1 loop
+                        if (l >= first_lba(k)) then t := k; end if;
+                     end loop;
+                     o := (l - first_lba(t)) * 2352 + (nwords / 2) * 4;
+                     expw := fileword(slot(t), o);
+                     if (nwords mod 2 = 0) then exph := expw(15 downto 0); else exph := expw(31 downto 16); end if;
+                     if (data /= exph) then
+                        if (errors < 10) then
+                           report "after a withdrawn request: LBA " & integer'image(l) & " word " & integer'image(nwords) &
+                                  ": " & to_hstring(data) & " expected " & to_hstring(exph) severity error;
+                        end if;
+                        errors := errors + 1;
+                     end if;
+                     nwords := nwords + 1;
+                  end if;
+                  exit when ack = '0';
+               end if;
+            end loop;
+            assert nwords = 1176 report "LBA " & integer'image(l) & ": " & integer'image(nwords) & " words" severity failure;
+            for i in 0 to 50 loop wait until rising_edge(clk1x); end loop;
+         end loop;
+         report "WITHDRAW rounds=" & integer'image(WITHDRAW) & " word_errors=" & integer'image(errors);
+      end if;
 
       ---------------- double speed stream: sector i asked for at max(T0 + i * 6.667 ms, when sector i - 1 was in)
       if (NSTREAM > 0 and LAYOUT /= 2) then

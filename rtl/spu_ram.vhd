@@ -25,6 +25,12 @@ entity spu_ram is
       ram_request          : in  std_logic;
       ram_rnw              : in  std_logic;
       ram_dataRead         : out std_logic_vector(15 downto 0);
+      -- Pocket save states: port B of the on-chip parts of SPU RAM (capture 0x00000-0x00FFF, reverb 0x70000-0x7FFFF)
+      -- for the save-state routine; halfword address: bit 15 = 1 reverb (14:0), 0 capture (10:0)
+      ss_ramAdr            : in  unsigned(15 downto 0) := (others => '0');
+      ss_ramWe             : in  std_logic := '0';
+      ss_ramDin            : in  std_logic_vector(15 downto 0) := (others => '0');
+      ss_ramDout           : out std_logic_vector(15 downto 0);
       ram_done             : out std_logic;
       
       ram_isTransfer       : in  std_logic;
@@ -59,6 +65,9 @@ entity spu_ram is
 end entity;
 
 architecture arch of spu_ram is
+
+   signal ss_captureQ        : std_logic_vector(15 downto 0);
+   signal ss_reverbQ         : std_logic_vector(15 downto 0);
    
    signal ram_isCapture        : std_logic;
    signal captureram_we        : std_logic;
@@ -156,10 +165,10 @@ begin
       q_a         => captureram_readdata,
       
       clock_b     => clk1x,
-      address_b   => (10 downto 0 => '0'),
-      data_b      => x"0000",
-      wren_b      => '0',
-      q_b         => open
+      address_b   => std_logic_vector(ss_ramAdr(10 downto 0)),
+      data_b      => ss_ramDin,
+      wren_b      => ss_ramWe and not ss_ramAdr(15),
+      q_b         => ss_captureQ
    );   
    
 -- reverb ram  64kbyte -> should cover most use cases, fallback is direct memory access
@@ -178,11 +187,12 @@ begin
       q_a         => reverbram_readdata,
       
       clock_b     => clk1x,
-      address_b   => (14 downto 0 => '0'),
-      data_b      => x"0000",
-      wren_b      => '0',
-      q_b         => open
+      address_b   => std_logic_vector(ss_ramAdr(14 downto 0)),
+      data_b      => ss_ramDin,
+      wren_b      => ss_ramWe and ss_ramAdr(15),
+      q_b         => ss_reverbQ
    );
+   ss_ramDout <= ss_reverbQ when (ss_ramAdr(15) = '1') else ss_captureQ;
    
    -- cache layout
    -- 8 QWords = 32 Words per Line

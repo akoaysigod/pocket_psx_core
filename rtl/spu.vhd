@@ -41,6 +41,11 @@ entity spu is
       bus_write            : in  std_logic;
       bus_dataRead         : out std_logic_vector(15 downto 0);
       
+      -- Pocket save states: ss_hold keeps the engine in IDLE (no new sample); while the save-state routine runs
+      -- (ss_mode) 0x300-0x31F is a window on the hidden voice records and engine state (see "save-state window")
+      ss_mode              : in  std_logic := '0';
+      ss_hold              : in  std_logic := '0';
+      
       spu_dmaRequest       : out std_logic;
       dma_read             : in  std_logic;
       dma_readdata         : out std_logic_vector(15 downto 0);     
@@ -324,6 +329,13 @@ architecture arch of spu is
    signal RamVoiceRecord_addrA : unsigned(4 downto 0) := (others => '0');
    signal RamVoiceRecord_dataA : std_logic_vector(102 downto 0) := (others => '0');
    signal RamVoiceRecord_write : std_logic := '0';     
+   
+   -- save-state window
+   signal ss_idle_now          : std_logic;
+   signal ss_ramPtr            : unsigned(15 downto 0) := (others => '0');
+   signal ss_ramWe             : std_logic := '0';
+   signal ss_ramDin            : std_logic_vector(15 downto 0) := (others => '0');
+   signal ss_ramDout           : std_logic_vector(15 downto 0);
    
    type tvoicerecords_addrB is array(0 to 1) of unsigned(4 downto 0);
    signal RamVoiceRecord_addrB : tvoicerecords_addrB;
@@ -794,6 +806,8 @@ begin
    
    RamVoiceRecord_addrB(0)  <= to_unsigned(index, 5);
    
+   ss_idle_now <= '1' when (state = IDLE and ss_hold = '1') else '0';
+   
    RamVoiceRecord_addrB(1)  <= SS_Adr(6 downto 2);
      
 -- adpcmSamples
@@ -941,6 +955,11 @@ begin
          RamVoice_write          <= '0';
          RamVoiceVolumes_write   <= '0';
          RamVoiceRecord_write    <= '0';
+         
+         ss_ramWe                <= '0';
+         if (ss_ramWe = '1') then
+            ss_ramPtr <= ss_ramPtr + 1;
+         end if;
             
          adpcm_ram_wren_a        <= (others => '0');
                
@@ -1247,14 +1266,50 @@ begin
                   shadowValid(to_integer(bus_addr(6 downto 1))) <= '1';
                end if;
                
-               if (bus_addr < 16#180#) then
+               if (ss_mode = '1' and bus_addr(9 downto 5) = "11000") then   -- save-state window (0x300-0x31E)
+                  case (to_integer(bus_addr(4 downto 1))) is
+                     when 0 => RamVoiceRecord_dataA( 15 downto  0) <= bus_dataWrite;
+                     when 1 => RamVoiceRecord_dataA( 31 downto 16) <= bus_dataWrite;
+                     when 2 => RamVoiceRecord_dataA( 47 downto 32) <= bus_dataWrite;
+                     when 3 => RamVoiceRecord_dataA( 63 downto 48) <= bus_dataWrite;
+                     when 4 =>
+                        RamVoiceRecord_dataA( 67 downto  64) <= bus_dataWrite( 3 downto  0);
+                        RamVoiceRecord_dataA(102)            <= bus_dataWrite(4);
+                        RamVoiceRecord_dataA(101)            <= bus_dataWrite(5);
+                        RamVoiceRecord_dataA( 76 downto  74) <= bus_dataWrite( 8 downto  6);
+                        RamVoiceRecord_dataA( 73 downto  68) <= bus_dataWrite(14 downto  9);
+                        RamVoiceRecord_dataA(100 downto  77) <= (others => '0');   -- adsrTicks: next step one tick early
+                     when 6 =>                                                     -- command: voice in bits 4:0
+                        if (unsigned(bus_dataWrite(4 downto 0)) < 24) then
+                           index <= to_integer(unsigned(bus_dataWrite(4 downto 0)));
+                           RamVoiceRecord_addrA <= unsigned(bus_dataWrite(4 downto 0));
+                           RamVoiceRecord_write <= bus_dataWrite(15);              -- store the lanes as that record
+                        end if;
+                     when 7 =>
+                        ramTransferAddr(18 downto 16)      <= unsigned(bus_dataWrite(2 downto 0));
+                        reverbCurrentAddress(17 downto 16) <= unsigned(bus_dataWrite(4 downto 3));
+                        reverbRight                        <= bus_dataWrite(5);
+                        IRQ9                               <= bus_dataWrite(6);
+                        irqSaved                           <= bus_dataWrite(7);
+                     when 8  => ramTransferAddr(15 downto 0)      <= unsigned(bus_dataWrite);
+                     when 9  => ENDX(15 downto 0)                 <= bus_dataWrite;
+                     when 10 => reverbCurrentAddress(15 downto 0) <= unsigned(bus_dataWrite);
+                     when 11 => ENDX(31 downto 16)                <= bus_dataWrite;
+                     when 12 => capturePosition                   <= unsigned(bus_dataWrite(9 downto 0));
+                     when 13 => ss_ramPtr                         <= unsigned(bus_dataWrite);
+                     when 14 =>                                                        -- on-chip SPU RAM, next halfword
+                        ss_ramWe  <= '1';
+                        ss_ramDin <= bus_dataWrite;
+                     when others => null;
+                  end case;
+               elsif (bus_addr < 16#180#) then
                   RamVoice_write <= '1';
                   RamVoice_dataA <= bus_dataWrite;
                   RamVoice_addrA <= bus_addr(8 downto 1);
 
                   case (bus_addr(3 downto 0)) is
-                     when x"8" | x"A" => voice_adsrWrite(to_integer(bus_addr(8 downto 4)))   <= '1';
-                     when x"E"        => voice_repeatWrite(to_integer(bus_addr(8 downto 4))) <= '1';
+                     when x"8" | x"A" => voice_adsrWrite(to_integer(bus_addr(8 downto 4)))   <= not ss_mode;
+                     when x"E"        => voice_repeatWrite(to_integer(bus_addr(8 downto 4))) <= not ss_mode;
                      when others => null;
                   end case;
                   
@@ -1362,6 +1417,26 @@ begin
                   bus_dataRead_mux <= RamVoice_dataB(0);   
                elsif (bus_addr >= 16#200# and bus_addr < 16#260#) then
                   bus_dataRead_mux <= RamVoiceVolumes_dataB(0);
+               elsif (ss_mode = '1' and bus_addr(9 downto 5) = "11000") then   -- save-state window (0x300-0x31E)
+                  case (to_integer(bus_addr(4 downto 1))) is
+                     -- the record of the voice the last command selected (index), straight from the record RAM
+                     when 0 => bus_dataRead_mux <= RamVoiceRecord_dataB(0)(15 downto 0);    -- currentAddr
+                     when 1 => bus_dataRead_mux <= RamVoiceRecord_dataB(0)(31 downto 16);   -- adpcmLast0
+                     when 2 => bus_dataRead_mux <= RamVoiceRecord_dataB(0)(47 downto 32);   -- adpcmLast1
+                     when 3 => bus_dataRead_mux <= RamVoiceRecord_dataB(0)(63 downto 48);   -- adpcmSamplePos 15:0
+                     when 4 => bus_dataRead_mux <= '0' & RamVoiceRecord_dataB(0)(73 downto 68) & RamVoiceRecord_dataB(0)(76 downto 74) &
+                                                   RamVoiceRecord_dataB(0)(101) & RamVoiceRecord_dataB(0)(102) &
+                                                   RamVoiceRecord_dataB(0)(67 downto 64);  -- decodePtr, adsrphase, flags, pos 19:16
+                     when 7 => bus_dataRead_mux <= "0000000" & ss_idle_now & irqSaved & IRQ9 & reverbRight &
+                                                   std_logic_vector(reverbCurrentAddress(17 downto 16)) & std_logic_vector(ramTransferAddr(18 downto 16));
+                     when 8 => bus_dataRead_mux <= std_logic_vector(ramTransferAddr(15 downto 0));
+                     when 10 => bus_dataRead_mux <= std_logic_vector(reverbCurrentAddress(15 downto 0));
+                     when 12 => bus_dataRead_mux <= "000000" & std_logic_vector(capturePosition);
+                     when 14 =>                                                        -- on-chip SPU RAM, next halfword
+                        bus_dataRead_mux <= ss_ramDout;
+                        ss_ramPtr        <= ss_ramPtr + 1;
+                     when others => null;
+                  end case;
                else
                   case (to_integer(bus_addr)) is
                   
@@ -1611,7 +1686,7 @@ begin
             case (state) is
             
                when IDLE =>
-                  if (sampleticks = 0 or stashedSamples > 0) then
+                  if ((sampleticks = 0 or stashedSamples > 0) and ss_hold = '0') then
                      state          <= VOICE_START;
                      index          <= 0;
                      envelopeIndex  <= 0;
@@ -2662,6 +2737,10 @@ begin
       ram_request          => ram_request,          
       ram_rnw              => ram_rnw,           
       ram_dataRead         => ram_dataRead,       
+      ss_ramAdr            => ss_ramPtr,
+      ss_ramWe             => ss_ramWe,
+      ss_ramDin            => ss_ramDin,
+      ss_ramDout           => ss_ramDout,
       ram_done             => ram_done,     
 
       ram_isTransfer       => ram_isTransfer,
@@ -2709,6 +2788,11 @@ begin
             if (FifoIn_Empty = '1' and FifoOut_Empty = '1') then
                ss_timeout <= (others => '0');
             end if;
+         end if;
+         -- Pocket save states: held in IDLE by the save-state routine the engine is idle too (samples it was behind
+         -- by stay stashed while it is held, so the condition above would keep the core's pause waiting)
+         if (ss_idle_now = '1') then
+            SS_idle <= '1';
          end if;
          
          if (ss_timeout(23) = '0') then

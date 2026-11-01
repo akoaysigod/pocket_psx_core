@@ -27,6 +27,10 @@ entity irq is
       bus_write            : in  std_logic;
       bus_dataRead         : out std_logic_vector(31 downto 0);
       
+      -- Pocket save states: while the routine runs (ss_mode) an I_STAT write loads it instead of acknowledging (the
+      -- routine reads I_STAT last on a save and writes it last on a restore, so edges in between are accounted for)
+      ss_mode              : in  std_logic := '0';
+      
       irqRequest           : out std_logic := '0';
       
 -- synthesis translate_off
@@ -124,6 +128,9 @@ begin
             
                if (bus_addr = 0) then
                   I_STATUSNew := I_STATUSNew and unsigned(bus_dataWrite(10 downto 0));
+                  if (ss_mode = '1') then
+                     I_STATUSNew := unsigned(bus_dataWrite(10 downto 0));
+                  end if;
                elsif (bus_addr = 4) then
                   I_MASK   <= unsigned(bus_dataWrite(31 downto 16)) & "00000" & unsigned(bus_dataWrite(10 downto 0));
                end if;
