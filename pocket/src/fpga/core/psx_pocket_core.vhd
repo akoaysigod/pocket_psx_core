@@ -13,6 +13,7 @@ entity psx_pocket_core is
       clkvid : in std_logic;
       reset : in std_logic;
       isPaused : out std_logic;
+      pause : in std_logic;
       ram_refresh : out std_logic;
       ram_dataWrite : out std_logic_vector(31 downto 0);
       ram_dataRead32 : in std_logic_vector(31 downto 0);
@@ -104,7 +105,12 @@ entity psx_pocket_core is
       sound_out_right : out std_logic_vector(15 downto 0);
       sound_tick : out std_logic;
       sound_valid : out std_logic;
-      debug_out : out std_logic_vector(255 downto 0)
+      debug_out : out std_logic_vector(255 downto 0);
+      ss_req : in std_logic;
+      ss_restore : in std_logic;
+      ss_status : in std_logic_vector(7 downto 0);
+      ss_cmd : out std_logic_vector(7 downto 0);
+      ss_cmd_we : out std_logic
    );
 end entity;
 
@@ -119,7 +125,7 @@ begin
       clkvid => clkvid,
       reset => reset,
       isPaused => isPaused,
-      pause => '0',
+      pause => pause,
       hps_busy => '0',
       loadExe => '0',
       exe_initial_pc => (others => '0'),
@@ -363,6 +369,11 @@ begin
       validSStates => open,
       rewind_on => '0',
       rewind_active => '0',
+      ss_req => ss_req,
+      ss_restore => ss_restore,
+      ss_status => ss_status,
+      ss_cmd => ss_cmd,
+      ss_cmd_we => ss_cmd_we,
       cheat_clear => '0',
       cheats_enabled => '0',
       cheat_on => '0',

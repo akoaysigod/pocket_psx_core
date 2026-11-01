@@ -37,7 +37,7 @@ entity pocket_psx is
       bridge_wr          : in  std_logic;
       bridge_wr_data     : in  std_logic_vector(31 downto 0);
       bridge_rd          : in  std_logic;
-      memcard_rd_data    : out std_logic_vector(31 downto 0);   -- bridge read data for 0x2xxxxxxx
+      memcard_rd_data    : out std_logic_vector(31 downto 0);   -- bridge read data for 0x2xxxxxxx and 0x5xxxxxxx
       -- APF data slot table and target command "data slot read" (core_bridge_cmd, clk_74a), for the CD
       datatable_addr     : out std_logic_vector(9 downto 0);
       datatable_q        : in  std_logic_vector(31 downto 0);
@@ -51,6 +51,20 @@ entity pocket_psx is
       dsr_done           : in  std_logic;
       cont1_key          : in  std_logic_vector(31 downto 0);
       loader_overflow    : out std_logic;   -- sticky, for debugging (BIOS words lost)
+      -- APF save states (core_bridge_cmd, clk_74a): the state is the bridge window 0x50000000-0x503FFFFF (see
+      -- "save states" below). savestate_supported is always set: APF asks once, when the core loads (maybe before
+      -- the save-state routine, data slot 0x10000000, is written); without the routine a save or load is refused
+      ss_supported       : out std_logic := '1';
+      ss_start           : in  std_logic;
+      ss_start_ack       : out std_logic := '0';
+      ss_start_busy      : out std_logic := '0';
+      ss_start_ok        : out std_logic := '0';
+      ss_start_err       : out std_logic := '0';
+      ss_load            : in  std_logic;
+      ss_load_ack        : out std_logic := '0';
+      ss_load_busy       : out std_logic := '0';
+      ss_load_ok         : out std_logic := '0';
+      ss_load_err        : out std_logic := '0';
       -- SDRAM controller (rtl/sdram.sv in core_top.v), channels as on MiSTer: ch1 = core reads, ch2 = core
       -- writes, ch3 = BIOS download then SPU RAM
       sdram_init         : out std_logic;
@@ -135,20 +149,94 @@ architecture arch of pocket_psx is
    signal psx_reset      : std_logic := '1';
    signal loading_1x     : std_logic_vector(2 downto 0) := (others => '0');
 
-   -- BIOS loader FIFO: {word address(16:0), data(31:0)}
+   -- loader FIFO (BIOS, save-state routine, save-state load): {SDRAM word address(22:0), data(31:0)}
    signal fifo_wrreq     : std_logic := '0';
-   signal fifo_data      : std_logic_vector(48 downto 0) := (others => '0');
+   signal fifo_data      : std_logic_vector(54 downto 0) := (others => '0');
    signal fifo_wrfull    : std_logic;
    signal fifo_rdreq     : std_logic := '0';
-   signal fifo_q         : std_logic_vector(48 downto 0);
+   signal fifo_q         : std_logic_vector(54 downto 0);
    signal fifo_rdempty   : std_logic;
    signal overflow       : std_logic := '0';
-   type tLoad is (L_IDLE, L_READ, L_WRITE, L_WAIT);
+   type tLoad is (L_IDLE, L_READ, L_WRITE, L_WAIT, L_RDWAIT);
    signal lstate         : tLoad := L_IDLE;
    signal l_addr         : unsigned(26 downto 0) := (others => '0');
    signal l_data         : std_logic_vector(31 downto 0) := (others => '0');
    signal l_req          : std_logic := '0';
    signal loader_busy    : std_logic;
+
+   -- save states. The save / restore routine runs on the PSX CPU (rtl/cpu.vhd SS_VECTOR); it is loaded from data
+   -- slot 0x10000000 into SDRAM 0x200000 (above main RAM, reached by the CPU only in psx_top's ss_mode) and keeps
+   -- the CPU / register state it collects at SDRAM 0x220000. APF reads (save) or writes (load) the state through
+   -- the bridge window 0x50000000 + offset:
+   --   0x000000-0x1FFFFF main RAM (SDRAM 0x0000000)   0x200000-0x27FFFF SPU RAM (SDRAM 0x1000000)
+   --   0x280000-0x29FFFF routine's state block (SDRAM 0x0220000)   0x300000-0x3FFFFF VRAM (PSRAM region 0,
+   --   pocket_memcard). Save: the routine collects the register state, then the core is paused (frozen) while
+   --   APF reads the window, and released after the last word is read. Load: the first bridge write into the
+   --   window holds the core in reset; APF's load command then restarts it into the routine (ss_restore), which
+   --   puts the register state back and returns into the game.
+   constant SS_SIZE      : std_logic_vector(31 downto 0) := x"00400000";
+   constant SS_CMD_ENTER : std_logic_vector(3 downto 0) := x"1";   -- routine entered (drop ss_req)
+   constant SS_CMD_CAPT  : std_logic_vector(3 downto 0) := x"2";   -- state collected: freeze for APF to read
+   constant SS_CMD_DONE  : std_logic_vector(3 downto 0) := x"3";   -- returning into the game
+   constant SS_CMD_RETRY : std_logic_vector(3 downto 0) := x"4";   -- not at a safe point: raise ss_req again
+   constant SS_CMD_BAD   : std_logic_vector(3 downto 0) := x"5";   -- load: not the routine's state format (error)
+   type tSS is (SS_IDLE, SS_SAVE_REQ, SS_SAVE_RUN, SS_SAVE_FROZEN, SS_SAVE_RESUME, SS_LOAD_HOLD, SS_LOAD_WAIT,
+                SS_LOAD_RUN);
+   signal ss_state       : tSS := SS_IDLE;
+   signal ss_timer       : unsigned(29 downto 0) := (others => '0');   -- bit 26: ~2 s at clk1x, bit 29: ~16 s
+   signal ss_req         : std_logic := '0';
+   signal ss_restore     : std_logic := '0';
+   signal ss_pause       : std_logic := '0';
+   signal ss_hold_reset  : std_logic := '0';
+   signal ss_frozen      : std_logic := '0';   -- core paused for APF reads: SDRAM channel 3 is the reader's
+   signal ss_released    : std_logic := '0';
+   signal ss_status      : std_logic_vector(7 downto 0);
+   signal ss_cmd         : std_logic_vector(7 downto 0);
+   signal ss_cmd_we      : std_logic;
+   signal core_paused    : std_logic;
+   signal ss_start_s, ss_load_s : std_logic_vector(2 downto 0) := (others => '0');
+   signal ss_ack_s, ss_lack_s, ss_busy_1x, ss_ok_1x, ss_err_1x, ss_lbusy_1x, ss_lok_1x, ss_lerr_1x : std_logic := '0';
+   signal ss_out_s1, ss_out_s2 : std_logic_vector(7 downto 0) := (others => '0');
+   -- bridge side (clk_74a)
+   signal ss_helper      : std_logic := '0';   -- the routine's data slot was written
+   signal ss_wr_tog      : std_logic := '0';   -- a bridge write into the window (load starts)
+   signal ss_last_tog    : std_logic := '0';   -- APF read the window's last word (save done)
+   signal ss_rd_1        : std_logic := '0';
+   signal ss_rd_sdram    : std_logic := '0';   -- the last bridge read was an SDRAM word (else pocket_memcard's)
+   signal ss_rd_tog      : std_logic := '0';
+   signal ss_rd_addr     : std_logic_vector(22 downto 0) := (others => '0');
+   signal ss_rd_data     : std_logic_vector(31 downto 0) := (others => '0');
+   signal mc_rd_data     : std_logic_vector(31 downto 0);
+   -- clk1x side of the bridge crossings
+   signal ss_wr_s, ss_last_s, ss_rd_s, ss_rack_s : std_logic_vector(2 downto 0) := (others => '0');
+   signal ss_helper_s    : std_logic_vector(1 downto 0) := "00";
+   signal ss_rd_ack      : std_logic := '0';
+   signal ss_rd_q        : std_logic_vector(31 downto 0) := (others => '0');
+   signal l_rnw          : std_logic := '0';
+
+   -- bridge address -> SDRAM byte address for the loader and the save-state reader; valid: 1 = BIOS / routine
+   -- slot (write only), 2 = save-state window (SDRAM part)
+   procedure map_sdram(a : in std_logic_vector(31 downto 0); valid : out integer range 0 to 2;
+                       sa : out unsigned(24 downto 0)) is
+   begin
+      valid := 0;
+      sa    := resize(unsigned(a(20 downto 0)), 25);                       -- main RAM: SDRAM 0x0000000
+      if (a(31 downto 28) = x"0") then                                     -- BIOS (data slot 1)
+         valid := 1;
+         sa    := to_unsigned(16#0800000#, 25) or resize(unsigned(a(18 downto 0)), 25);
+      elsif (a(31 downto 28) = x"1") then                                  -- save-state routine (data slot 3)
+         valid := 1;
+         sa    := to_unsigned(16#0200000#, 25) or resize(unsigned(a(15 downto 0)), 25);
+      elsif (a(31 downto 28) = x"5" and a(27 downto 21) = "0000000") then  -- main RAM
+         valid := 2;
+      elsif (a(31 downto 28) = x"5" and a(27 downto 19) = "000000100") then -- SPU RAM
+         valid := 2;
+         sa    := to_unsigned(16#1000000#, 25) or resize(unsigned(a(18 downto 0)), 25);
+      elsif (a(31 downto 28) = x"5" and a(27 downto 17) = "00000010100") then -- the routine's state block
+         valid := 2;
+         sa    := to_unsigned(16#0220000#, 25) or resize(unsigned(a(16 downto 0)), 25);   -- 128 KB aligned
+      end if;
+   end procedure;
 
    -- bring-up diagnostics (pocket_diag hex page, Select held): snapshots of the core's debug outputs
    -- (psx_top debug_out), refreshed every 2^24 clk1x (~0.5 s); 4 PC samples spread over that window
@@ -251,34 +339,64 @@ begin
          -- the core is held in reset while APF loads data slots, until the loader FIFOs are drained and until
          -- the CD track table is built
          psx_reset  <= resetsync(2) or loading_1x(2) or (not fifo_rdempty) or loader_busy or (not cdready_1x(2)) or
-                       mcbusy_1x(2);
+                       mcbusy_1x(2) or ss_hold_reset;
       end if;
    end process;
    sdram_init <= not pll_locked;
 
-   ---------------------------------------------------------------- BIOS loader
-   -- APF writes 32-bit words of data slot 0 at bridge addresses 0x00000000.. (bridge_endian_little = 1)
+   ---------------------------------------------------------------- loader: bridge writes -> SDRAM
+   -- APF writes 32-bit words of data slot 1 (BIOS) at bridge addresses 0x00000000.. (bridge_endian_little = 1),
+   -- of the save-state routine at 0x10000000.., and of a save state to load at 0x50000000.. (see map_sdram)
    process (clk_74a)
+      variable v  : integer range 0 to 2;
+      variable sa : unsigned(24 downto 0);
    begin
       if rising_edge(clk_74a) then
          fifo_wrreq <= '0';
-         if (bridge_wr = '1' and bridge_addr(31 downto 28) = x"0") then
+         map_sdram(bridge_addr, v, sa);
+         if (bridge_wr = '1' and v /= 0) then
             if (fifo_wrfull = '1') then
                overflow <= '1';
             else
                fifo_wrreq <= '1';
-               fifo_data  <= bridge_addr(18 downto 2) & bridge_wr_data;
+               fifo_data  <= std_logic_vector(sa(24 downto 2)) & bridge_wr_data;
             end if;
+         end if;
+         if (bridge_wr = '1' and bridge_addr(31 downto 28) = x"1") then
+            ss_helper <= '1';
+         end if;
+         -- save states: a write anywhere in the window starts a load; a read of its last word ends a save
+         if (bridge_wr = '1' and bridge_addr(31 downto 28) = x"5") then
+            ss_wr_tog <= not ss_wr_tog;
+         end if;
+         ss_rd_1 <= bridge_rd;
+         if (bridge_rd = '1' and ss_rd_1 = '0') then
+            if (v = 2) then
+               ss_rd_sdram <= '1';
+               ss_rd_addr  <= std_logic_vector(sa(24 downto 2));
+               ss_rd_tog   <= not ss_rd_tog;
+            elsif (bridge_addr(31 downto 28) = x"2" or bridge_addr(31 downto 28) = x"5") then
+               ss_rd_sdram <= '0';
+            end if;
+            if (bridge_addr = x"503FFFFC") then
+               ss_last_tog <= not ss_last_tog;
+            end if;
+         end if;
+         ss_rack_s <= ss_rack_s(1 downto 0) & ss_rd_ack;
+         if (ss_rack_s(2) /= ss_rack_s(1)) then
+            ss_rd_data <= ss_rd_q;
          end if;
       end if;
    end process;
+   ss_supported    <= '1';
+   memcard_rd_data <= ss_rd_data when (ss_rd_sdram = '1') else mc_rd_data;
    loader_overflow <= overflow or mc_overflow;
 
    iloadfifo : dcfifo
    generic map
    (
       intended_device_family => "Cyclone V", lpm_numwords => 256, lpm_showahead => "OFF", lpm_type => "dcfifo",
-      lpm_width => 49, lpm_widthu => 8, overflow_checking => "ON", rdsync_delaypipe => 4,
+      lpm_width => 55, lpm_widthu => 8, overflow_checking => "ON", rdsync_delaypipe => 4,
       underflow_checking => "ON", use_eab => "ON", wrsync_delaypipe => 4
    )
    port map
@@ -287,21 +405,29 @@ begin
       q => fifo_q, rdempty => fifo_rdempty, wrfull => fifo_wrfull
    );
 
+   -- loader writes (FIFO) and, while the core is frozen for a save, the save-state reader's single word reads
    process (clk1x)
    begin
       if rising_edge(clk1x) then
          fifo_rdreq   <= '0';
+         ss_rd_s      <= ss_rd_s(1 downto 0) & ss_rd_tog;
          case (lstate) is
             when L_IDLE =>
                if (fifo_rdempty = '0' and fifo_rdreq = '0') then
                   fifo_rdreq <= '1';
                   lstate     <= L_READ;
+               elsif (ss_rd_s(2) /= ss_rd_ack and ss_frozen = '1') then
+                  l_addr   <= "00" & unsigned(ss_rd_addr) & "00";
+                  l_rnw    <= '1';
+                  l_req    <= '1';
+                  lstate   <= L_RDWAIT;
                end if;
             when L_READ =>                 -- q is valid one clock after rdreq
                lstate <= L_WRITE;
             when L_WRITE =>
-               l_addr   <= BIOS_BASE + resize(unsigned(fifo_q(48 downto 32)) & "00", 27);
+               l_addr   <= "00" & unsigned(fifo_q(54 downto 32)) & "00";
                l_data   <= fifo_q(31 downto 0);
+               l_rnw    <= '0';
                l_req    <= '1';
                lstate   <= L_WAIT;
             when L_WAIT =>
@@ -309,19 +435,184 @@ begin
                if (ch3_ready = '1') then
                   lstate <= L_IDLE;
                end if;
+            when L_RDWAIT =>
+               l_req <= '0';
+               if (ch3_ready = '1') then
+                  ss_rd_q   <= ch3_dout;
+                  ss_rd_ack <= ss_rd_s(2);
+                  lstate    <= L_IDLE;
+               end if;
          end case;
       end if;
    end process;
 
-   loader_busy <= '0' when (lstate = L_IDLE) else '1';
+   -- writing (holds the core in reset); the save-state reader's reads (L_RDWAIT, core frozen) do not count
+   loader_busy <= '1' when (lstate = L_READ or lstate = L_WRITE or lstate = L_WAIT) else '0';
 
-   -- channel 3: loader while loading (core in reset), SPU RAM afterwards. sdram.sv takes one request per
-   -- one-cycle ch3_req pulse and answers with one ch3_ready pulse, like the core's spuram_ena/spuram_done.
-   ch3_addr <= std_logic_vector(l_addr) when (psx_reset = '1') else std_logic_vector(SPURAM_BASE + resize(unsigned(spu_Adr), 27));
-   ch3_din  <= l_data                   when (psx_reset = '1') else spu_dataWrite;
-   ch3_be   <= "1111"                   when (psx_reset = '1') else spu_be;
-   ch3_req  <= l_req                    when (psx_reset = '1') else spu_ena;
-   ch3_rnw  <= '0'                      when (psx_reset = '1') else spu_rnw;
+   -- channel 3: loader while loading (core in reset) and save-state reader (core frozen), SPU RAM otherwise.
+   -- sdram.sv takes one request per one-cycle ch3_req pulse and answers with one ch3_ready pulse, like the core's
+   -- spuram_ena/spuram_done.
+   ch3_addr <= std_logic_vector(l_addr) when (psx_reset = '1' or ss_frozen = '1') else std_logic_vector(SPURAM_BASE + resize(unsigned(spu_Adr), 27));
+   ch3_din  <= l_data                   when (psx_reset = '1' or ss_frozen = '1') else spu_dataWrite;
+   ch3_be   <= "1111"                   when (psx_reset = '1' or ss_frozen = '1') else spu_be;
+   ch3_req  <= l_req                    when (psx_reset = '1' or ss_frozen = '1') else spu_ena;
+   ch3_rnw  <= l_rnw                    when (psx_reset = '1' or ss_frozen = '1') else spu_rnw;
+
+   ---------------------------------------------------------------- save states: APF handshake (clk1x)
+   process (clk1x)
+      variable cmd : std_logic_vector(3 downto 0);
+   begin
+      if rising_edge(clk1x) then
+         ss_start_s <= ss_start_s(1 downto 0) & ss_start;
+         ss_load_s  <= ss_load_s(1 downto 0) & ss_load;
+         ss_wr_s    <= ss_wr_s(1 downto 0) & ss_wr_tog;
+         ss_last_s  <= ss_last_s(1 downto 0) & ss_last_tog;
+         ss_helper_s <= ss_helper_s(0) & ss_helper;
+         ss_timer   <= ss_timer + 1;
+         cmd        := x"0";
+         if (ss_cmd_we = '1' and ss_cmd(7) = '0') then
+            cmd := ss_cmd(3 downto 0);
+         end if;
+
+         -- acks: held until APF drops its request (APF waits for one before it does; the states below set them,
+         -- after this, in the clock of the request's edge)
+         if (ss_start_s(2) = '0') then ss_ack_s <= '0'; end if;
+         if (ss_load_s(2) = '0') then ss_lack_s <= '0'; end if;
+         -- a request while another one runs (APF should not send one, but it would wait for the ack forever):
+         -- refused
+         if (ss_state /= SS_IDLE and ss_start_s(1) = '1' and ss_start_s(2) = '0') then
+            ss_ack_s <= '1'; ss_err_1x <= '1';
+         end if;
+         if (ss_state /= SS_IDLE and ss_state /= SS_LOAD_HOLD and ss_load_s(1) = '1' and ss_load_s(2) = '0') then
+            ss_lack_s <= '1'; ss_lerr_1x <= '1';
+         end if;
+
+         case (ss_state) is
+            when SS_IDLE =>
+               ss_req    <= '0';
+               ss_pause  <= '0';
+               ss_frozen <= '0';
+               if (ss_start_s(1) = '1' and ss_start_s(2) = '0' and ss_helper_s(1) = '0') then   -- no routine
+                  ss_busy_1x <= '0'; ss_ok_1x <= '0'; ss_err_1x <= '1'; ss_ack_s <= '1';
+               elsif (ss_start_s(1) = '1' and ss_start_s(2) = '0') then       -- APF: save
+                  ss_busy_1x <= '1'; ss_ok_1x <= '0'; ss_err_1x <= '0'; ss_ack_s <= '1';
+                  ss_req     <= '1';
+                  ss_timer   <= (others => '0');
+                  ss_state   <= SS_SAVE_REQ;
+               elsif (ss_wr_s(2) /= ss_wr_s(1)) then                          -- APF writes a state to load
+                  ss_hold_reset <= '1';
+                  ss_lok_1x  <= '0'; ss_lerr_1x <= '0';
+                  ss_state   <= SS_LOAD_HOLD;
+               elsif (ss_load_s(1) = '1' and ss_load_s(2) = '0') then         -- load without data
+                  ss_lack_s  <= '1'; ss_lerr_1x <= '1'; ss_lok_1x <= '0';
+               end if;
+
+            when SS_SAVE_REQ =>                                             -- wait for the routine to start
+               if (cmd = SS_CMD_ENTER) then
+                  ss_req   <= '0';
+                  ss_state <= SS_SAVE_RUN;
+               elsif (ss_timer(26) = '1') then
+                  ss_req     <= '0';
+                  ss_busy_1x <= '0'; ss_err_1x <= '1';
+                  ss_state   <= SS_IDLE;
+               end if;
+
+            when SS_SAVE_RUN =>
+               if (cmd = SS_CMD_CAPT) then
+                  ss_pause <= '1';
+                  ss_timer <= (others => '0');
+                  ss_state <= SS_SAVE_FROZEN;
+               elsif (cmd = SS_CMD_RETRY) then                                -- routine returned, try again
+                  ss_req   <= '1';
+                  ss_state <= SS_SAVE_REQ;
+               elsif (cmd = SS_CMD_DONE) then
+                  ss_busy_1x <= '0'; ss_err_1x <= '1';
+                  ss_state   <= SS_IDLE;
+               end if;
+
+            when SS_SAVE_FROZEN =>                                          -- APF reads the window (~1.2 s or more)
+               if (core_paused = '1' and ss_frozen = '0') then
+                  ss_frozen  <= '1';
+                  ss_busy_1x <= '0'; ss_ok_1x <= '1';
+               end if;
+               if (ss_frozen = '1' and (ss_last_s(2) /= ss_last_s(1) or ss_timer(ss_timer'left) = '1')) then
+                  ss_frozen   <= '0';
+                  ss_pause    <= '0';
+                  ss_released <= '1';
+                  ss_state    <= SS_SAVE_RESUME;
+               elsif (ss_frozen = '0' and ss_timer(26) = '1') then            -- the core did not pause in ~2 s:
+                  ss_pause    <= '0';                                       -- an error, the routine returns
+                  ss_released <= '1';
+                  ss_busy_1x  <= '0'; ss_err_1x <= '1';
+                  ss_state    <= SS_SAVE_RESUME;
+               end if;
+
+            when SS_SAVE_RESUME =>
+               if (cmd = SS_CMD_DONE) then
+                  ss_released <= '0';
+                  ss_state    <= SS_IDLE;
+               end if;
+
+            when SS_LOAD_HOLD =>                                            -- core in reset, APF writes
+               if (ss_load_s(1) = '1' and ss_load_s(2) = '0' and ss_helper_s(1) = '0') then   -- no routine: the
+                  ss_lack_s     <= '1'; ss_lerr_1x <= '1';                    -- core boots afresh
+                  ss_hold_reset <= '0';
+                  ss_state      <= SS_IDLE;
+               elsif (ss_load_s(1) = '1' and ss_load_s(2) = '0') then
+                  ss_lack_s   <= '1'; ss_lbusy_1x <= '1';
+                  ss_state    <= SS_LOAD_WAIT;
+               end if;
+
+            when SS_LOAD_WAIT =>                                            -- last words written
+               if (fifo_rdempty = '1' and lstate = L_IDLE and mcbusy_1x(2) = '0') then
+                  ss_hold_reset <= '0';
+                  ss_restore    <= '1';
+                  ss_timer      <= (others => '0');
+                  ss_state      <= SS_LOAD_RUN;
+                  -- APF still holds the core in reset (a wake from sleep writes the state and asks for the load
+                  -- before it lets the core run, and may wait for the result first): done as far as APF is concerned,
+                  -- the routine runs when the reset ends
+                  if (resetsync(2) = '1') then
+                     ss_lbusy_1x <= '0'; ss_lok_1x <= '1';
+                  end if;
+               end if;
+
+            when SS_LOAD_RUN =>                                             -- the routine restores the state
+               if (psx_reset = '1') then                                    -- the time-out counts while the core runs
+                  ss_timer <= (others => '0');
+               end if;
+               if (cmd = SS_CMD_DONE) then
+                  ss_restore  <= '0';
+                  ss_lbusy_1x <= '0'; ss_lok_1x <= '1';
+                  ss_state    <= SS_IDLE;
+               elsif (cmd = SS_CMD_BAD or ss_timer(26) = '1') then
+                  ss_restore  <= '0';
+                  ss_lbusy_1x <= '0'; ss_lok_1x <= '0'; ss_lerr_1x <= '1';
+                  ss_state    <= SS_IDLE;
+               end if;
+         end case;
+
+      end if;
+   end process;
+
+   ss_status <= "000000" & ss_released & ss_restore;
+
+   -- to APF (clk_74a): levels through two registers
+   process (clk_74a)
+   begin
+      if rising_edge(clk_74a) then
+         ss_out_s1 <= ss_ack_s & ss_busy_1x & ss_ok_1x & ss_err_1x & ss_lack_s & ss_lbusy_1x & ss_lok_1x & ss_lerr_1x;
+         ss_out_s2 <= ss_out_s1;
+      end if;
+   end process;
+   ss_start_ack  <= ss_out_s2(7);
+   ss_start_busy <= ss_out_s2(6);
+   ss_start_ok   <= ss_out_s2(5);
+   ss_start_err  <= ss_out_s2(4);
+   ss_load_ack   <= ss_out_s2(3);
+   ss_load_busy  <= ss_out_s2(2);
+   ss_load_ok    <= ss_out_s2(1);
+   ss_load_err   <= ss_out_s2(0);
 
    ---------------------------------------------------------------- controller 1
    -- Core Settings pickers (interact.json, written by APF when changed and at start for persisted values; 0 until
@@ -358,7 +649,9 @@ begin
       clk1x => clk1x, clk2x => clk2x, clk3x => clk3x, clkvid => clkvid,
       reset => psx_reset,
       hasCD => hascd_1x(1),
-      isPaused => open,
+      isPaused => core_paused,
+      pause => ss_pause,
+      ss_req => ss_req, ss_restore => ss_restore, ss_status => ss_status, ss_cmd => ss_cmd, ss_cmd_we => ss_cmd_we,
       ram_refresh => ram_refresh, ram_dataWrite => ram_din, ram_dataRead32 => ram_dout32, ram_Adr => core_ram_Adr,
       ram_cntDMA => ram_cntDMA, ram_be => ram_be, ram_rnw => core_ram_rnw, ram_ena => core_ram_ena, ram_dma => ram_dma,
       ram_cache => ram_cache, ram_done => (ram_rd_ready or ram_wr_ready),
@@ -373,7 +666,7 @@ begin
       cd_hps_req => cd_hps_req, cd_hps_lba => cd_hps_lba, cd_hps_ack => cd_hps_ack, cd_hps_write => cd_hps_write,
       cd_hps_data => cd_hps_data,
       spuram_dataWrite => spu_dataWrite, spuram_Adr => spu_Adr, spuram_be => spu_be, spuram_rnw => spu_rnw,
-      spuram_ena => spu_ena, spuram_dataRead => ch3_dout, spuram_done => (ch3_ready and not psx_reset),
+      spuram_ena => spu_ena, spuram_dataRead => ch3_dout, spuram_done => (ch3_ready and not psx_reset and not ss_frozen),
       memcard_changed => open, saving_memcard => open,
       -- the card lives in PSRAM region 1 (loaded / read back by APF through pocket_memcard), so MiSTer's HPS
       -- load / save transfers are not used
@@ -436,7 +729,7 @@ begin
    port map
    (
       clk_74a => clk_74a, bridge_addr => bridge_addr, bridge_wr => bridge_wr, bridge_wr_data => bridge_wr_data,
-      bridge_rd => bridge_rd, bridge_rd_data => memcard_rd_data, overflow => mc_overflow,
+      bridge_rd => bridge_rd, bridge_rd_data => mc_rd_data, overflow => mc_overflow,
       clk2x => clkv, reset_2x => vramrst_v(1), busy => mc_busy,
       aux_req => aux_req, aux_we => aux_we, aux_addr => aux_addr, aux_din => aux_din, aux_dout => aux_dout,
       aux_done => aux_done, card_write => card_write

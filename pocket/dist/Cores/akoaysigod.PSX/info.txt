@@ -1,5 +1,5 @@
 PlayStation for the Analogue Pocket, based on the PSX_MiSTer core (GPL-2), trimmed to fit the Pocket's FPGA:
-no save states, one memory card slot.
+one memory card slot. Save states (Memories) and sleep / wake.
 BIOS: put your own scph1001.bin in Assets/psx/common.
 Games: one .bin file per track (Redump style cue), each game's folder in Assets/psx/common. Pocket Sync or Pupdate
 make the game entries (instance JSONs) in Assets/psx/akoaysigod.PSX; see Assets/psx/common/HOW_TO_ADD_GAMES.txt

@@ -28,7 +28,8 @@ a = Asm()
 # event / status bits (IN_EV)
 (EV_RESET, EV_SOFT, EV_CE, EV_BEGIN, EV_HANDLE, EV_LONG, EV_WORKDONE, EV_GETID, EV_ACKREAD, EV_ACKPEND,
  EV_ACKPENDNEXT, EV_NEWCD, EV_DRIVEDONE, EV_CONT, EV_SUBDONE, EV_ACKSECTOR, EV_HOLD11, EV_SMRESET, EV_HASCD,
- EV_AUDIOCD, EV_PEMPTY, EV_REMPTY, EV_HDRDATA, EV_HDRDATASEC, EV_ISAUDIO, EV_DMAREAD, EV_SSWREN) = range(27)
+ EV_AUDIOCD, EV_PEMPTY, EV_REMPTY, EV_HDRDATA, EV_HDRDATASEC, EV_ISAUDIO, EV_DMAREAD, EV_SSWREN, EV_SSCOLLECT,
+ EV_SSAPPLY) = range(29)
 # IN_FLAGS bits
 FI_CMDPENDING, FI_CMDBUSY, FI_WORKING, FI_DRIVEBUSY, FI_HANDLE, FI_INITED = 8, 9, 10, 11, 17, 18
 # OUT_FSET / OUT_FCLR bits
@@ -58,7 +59,9 @@ DOUBLE = ['FL', 'PB', 'PC', 'CMD', 'STEPS', 'MISC', 'ERR', 'DST', 'IST', 'MODE',
 for n in DOUBLE:
     R('V_' + n)
     R('N_' + n)
-SINGLE = ['SETLOC', 'XAF', 'LASTREP', 'ERRD', 'PLAYLBA', 'TRK', 'PHYP', 'PHYBASE', 'SUB0', 'SUB1', 'SUB2']
+SINGLE = ['SETLOC', 'XAF', 'LASTREP', 'ERRD', 'PLAYLBA', 'TRK', 'PHYP', 'PHYBASE', 'SUB0', 'SUB1', 'SUB2',
+          'READLBA',                                           # copy of cd_ctrl's readLBA (save states)
+          'SS_FLAGS', 'SS_WORK', 'SS_DRIVE', 'SS_PTR']          # save states: cd_ctrl state (collect / apply)
 for n in SINGLE:
     R(n)
 
@@ -297,6 +300,33 @@ with a.if_bc(IN_FLAGS, FI_INITED):
     a.movi(V('MODE'), 0x20); a.movi(N('MODE'), 0x20)
     a.movi(regs['PHYP'], 8)
     fset(F_INITED)
+
+# ---------------------------------------------------------------- save states (Pocket, docs/savestates.md)
+# The save-state routine freezes the controller (cd_ctrl's ce stays low from a quiet clock on) and reads or writes
+# the whole register file through cd_ctrl's window. Collect copies the hardware state that is not in the variables
+# into SS_*; apply writes cd_ctrl's registers back from the variables (as the commit does, without the pulses) and
+# from SS_*. Neither changes a variable.
+with if_ev(EV_SSCOLLECT):
+    a.mov(regs['SS_FLAGS'], IN_FLAGS)
+    a.mov(regs['SS_WORK'], IN_WORKDLY)
+    a.mov(regs['SS_DRIVE'], IN_DRIVEDLY)
+    a.mov(regs['SS_PTR'], IN_PTR)
+    a.wait()
+with if_ev(EV_SSAPPLY):
+    a.mov(OUT_DSTATE, V('DST'))
+    a.mov(OUT_ISTAT, V('IST'))
+    a.mov(OUT_MODE, V('MODE'))
+    a.mov(OUT_XAF, regs['XAF'])
+    a.mov(OUT_CURLBA, V('CUR'))
+    a.mov(OUT_PHYLBA, V('PHYLBA'))
+    a.mov(OUT_READLBA, regs['READLBA'])
+    a.ld(regs['SS_PTR']); a.andi(7); a.st(OUT_WSP)
+    a.ld(regs['SS_PTR']); a.shr(4); a.andi(7); a.st(OUT_RSP)
+    a.mov(OUT_WORKDLY, regs['SS_WORK'])
+    # flags: cmdPending .. inited from the snapshot (bits 8 .. 18), report clear
+    a.ld(regs['SS_FLAGS']); a.shr8(); a.andi(0x7FF); a.st(OUT_FSET); a.xori(0xFFF); a.st(OUT_FCLR)
+    a.mov(OUT_DRIVEDLY, regs['SS_DRIVE'])                      # after driveBusy (see fset)
+    a.wait()
 
 # new copies start as the old values
 for n in DOUBLE:
@@ -1009,7 +1039,7 @@ with if_pulse('softReset'):
         with a.if_nz():
             dst(D_SEEKIMPLICIT)
             pulse('readOnDisk')
-            a.ldi(0); a.st(OUT_READLBA)
+            a.ldi(0); a.st(OUT_READLBA); a.st(regs['READLBA'])
         with a.else_():
             dst(D_SPEEDCHANGE)
         fset(F_DRIVEBUSY)
@@ -1102,7 +1132,7 @@ with if_pulse('handleDrive'):
                             ist_clr(0xE0)
                             dst(D_IDLE)
             with a.if_bc(T1, 0):
-                a.ld(IN_LASTREAD); a.addi(1); a.andi(0x7FFFF); a.st(OUT_READLBA)
+                a.ld(IN_LASTREAD); a.addi(1); a.andi(0x7FFFF); a.st(OUT_READLBA); a.st(regs['READLBA'])
                 a.movi(T2, 0)
                 with if_not_ev(EV_ISAUDIO):
                     with if_dst(D_READING):
@@ -1144,7 +1174,7 @@ with if_pulse('handleDrive'):
                                     a.ld(IN_LASTREAD); a.sub(T3)
                                 with a.else_():
                                     a.ld(IN_LASTREAD); a.add(T3)
-                                a.andi(0x7FFFF); a.st(OUT_READLBA)
+                                a.andi(0x7FFFF); a.st(OUT_READLBA); a.st(regs['READLBA'])
                 fset(F_DRIVEBUSY)                   # before the delay (see fset)
                 ld_readspeed(); a.subi(2); a.st(OUT_DRIVEDLY)
                 a.mov(N('CUR'), IN_LASTREAD)
@@ -1179,7 +1209,7 @@ with a.if_nz():
     with a.else_():
         ld_seeklba()
     a.st(T1)                                       # target LBA
-    a.st(OUT_READLBA)
+    a.st(OUT_READLBA); a.st(regs['READLBA'])
     a.ld(T1); a.cmp(V('CUR'))
     with a.if_c():                                 # target < current
         a.ld(V('CUR')); a.sub(T1)
@@ -1317,7 +1347,7 @@ with if_pulse('startReading'):
         a.ldi(0); a.st(OUT_WSP)
         rsp_zero()
         pulse('readOnDisk')
-        a.mov(OUT_READLBA, V('CUR'))
+        a.mov(OUT_READLBA, V('CUR')); a.mov(regs['READLBA'], V('CUR'))
         a.movi(N('STMUL'), 1)
         with if_not_flag('afterSeek'):
             with if_dst(D_SPEEDCHANGE):
@@ -1339,7 +1369,7 @@ with if_pulse('startPlaying'):
         a.ldi(0); a.st(OUT_WSP)
         rsp_zero()
         pulse('readOnDisk')
-        a.mov(OUT_READLBA, V('CUR'))
+        a.mov(OUT_READLBA, V('CUR')); a.mov(regs['READLBA'], V('CUR'))
         a.movi(N('STMUL'), 1)
         with if_not_flag('afterSeek'):
             pulse('addSeekTime')

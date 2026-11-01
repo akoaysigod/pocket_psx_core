@@ -293,6 +293,10 @@ always @(*) begin
         // memory card 1 save slot (APF reads it back on exit)
         bridge_rd_data <= memcard_rd_data;
     end
+    32'h5xxxxxxx: begin
+        // save-state window (pocket_psx)
+        bridge_rd_data <= memcard_rd_data;
+    end
     32'hF8xxxxxx: begin
         bridge_rd_data <= cmd_bridge_rd_data;
     end
@@ -362,10 +366,10 @@ psx_pll_video ipll_video (
     wire     [31:0] rtc_time_bcd;
     wire            rtc_valid;
 
-    wire            savestate_supported;
-    wire    [31:0]  savestate_addr;
-    wire    [31:0]  savestate_size;
-    wire    [31:0]  savestate_maxloadsize;
+    wire            savestate_supported;            // always (pocket_psx refuses a save / load without the routine)
+    wire    [31:0]  savestate_addr = 32'h50000000;   // bridge window, see pocket_psx
+    wire    [31:0]  savestate_size = 32'h00400000;
+    wire    [31:0]  savestate_maxloadsize = 32'h00400000;
 
     wire            savestate_start;
     wire            savestate_start_ack;
@@ -625,6 +629,17 @@ pocket_psx ipsx (
     .dsr_done         ( target_dataslot_done ),
     .cont1_key        ( cont1_key ),
     .loader_overflow  ( loader_overflow ),
+    .ss_supported     ( savestate_supported ),
+    .ss_start         ( savestate_start ),
+    .ss_start_ack     ( savestate_start_ack ),
+    .ss_start_busy    ( savestate_start_busy ),
+    .ss_start_ok      ( savestate_start_ok ),
+    .ss_start_err     ( savestate_start_err ),
+    .ss_load          ( savestate_load ),
+    .ss_load_ack      ( savestate_load_ack ),
+    .ss_load_busy     ( savestate_load_busy ),
+    .ss_load_ok       ( savestate_load_ok ),
+    .ss_load_err      ( savestate_load_err ),
 
     .sdram_init       ( sdram_init ),
     .ram_refresh      ( ram_refresh ),

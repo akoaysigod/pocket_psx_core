@@ -40,6 +40,22 @@ architecture arch of gte_UNRDivide is
       x"07", x"07", x"06", x"06", x"05", x"05", x"04", x"04", x"03", x"03", x"02", x"02", x"01", x"01", x"00", x"00", --
       x"00" -- one extra table entry (for "(d-7FC0h)/80h"=100h)
    );
+
+   -- the table as a 512-entry ROM (entries 257-511 unused): ROM inference needs a power-of-two depth, and in an
+   -- M10K block the table costs no logic (as a 257-entry constant it was built from LUTs)
+   type tunr_rom is array(0 to 511) of unsigned(7 downto 0);
+   function unr_rom_init return tunr_rom is
+      variable r : tunr_rom := (others => (others => '0'));
+   begin
+      for i in 0 to 256 loop
+         r(i) := unr_table(i);
+      end loop;
+      return r;
+   end function;
+   constant unr_rom : tunr_rom := unr_rom_init;
+   attribute romstyle : string;
+   attribute romstyle of unr_rom : constant is "M10K";
+   signal unr_addr      : unsigned(15 downto 0);   -- bits 15:7 = (d + 40h) / 80h
    
          
       
@@ -95,6 +111,8 @@ architecture arch of gte_UNRDivide is
 
 begin 
 
+   unr_addr <= resize(calc_rhs(14 downto 0), 16) + 64;
+
    process (clk2x)
       variable var_calc_d  : signed(27 downto 0);
       variable var_calc_r  : signed(27 downto 0);
@@ -139,7 +157,7 @@ begin
          shiftcount_3   <= shiftcount_2;
          
          if (trigger_2 = '1') then
-            tableValue <= unr_table((to_integer(calc_rhs(14 downto 0)) + 64) / 128);
+            tableValue <= unr_rom(to_integer(unr_addr(15 downto 7)));
             divisor    <= '0' & signed(calc_rhs);
             divisor(15)<= '1';
          end if;

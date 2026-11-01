@@ -121,7 +121,23 @@ entity cd_ctrl is
       newCD_1                 : out std_logic;
 
       eng_busy                : out std_logic;  -- simulation: the testbench holds the world while '1'
-      quiet                   : out std_logic   -- hardware: '0' while the engine has results of an edge to come
+      quiet                   : out std_logic;  -- hardware: '0' while the engine has results of an edge to come
+
+      -- Pocket save states (cd_top, while the save-state routine runs and the controller is frozen: ce low). The
+      -- routine reads / writes the engine's register file a byte at a time and starts the firmware's collect / apply
+      -- runs (rtl/cd_fw/cd_fw.py "save states").
+      ss_mode                 : in  std_logic := '0';
+      ss_ctl_we               : in  std_logic := '0';   -- control byte: 0x00-0x3F register index, 0x80 collect, 0x81 apply
+      ss_data_we              : in  std_logic := '0';   -- data byte (bits 31:24 first): the 4th stores the register, index + 1
+      ss_wbyte                : in  std_logic_vector(7 downto 0) := (others => '0');
+      ss_rd                   : in  std_logic := '0';   -- the byte was read (bits 7:0 first): the 4th moves to index + 1
+      ss_rbyte                : out std_logic_vector(7 downto 0);
+      -- while a save is asked for the drive starts no sector read. With CD audio playing it reads one sector after
+      -- the other, and on the Pocket a read whose sector is not in pocket_cd's read-ahead waits for APF, which looks
+      -- not to deliver while it waits for the save (hardware: saves failed during music, which stopped): the
+      -- controller was never quiet. A read that is due waits (driveDelay stays 0) and starts when the hold ends.
+      drive_hold              : in  std_logic := '0';
+      calm                    : out std_logic           -- no pulse shown, no engine run now or starting (freeze point)
    );
 end entity;
 
@@ -195,6 +211,16 @@ architecture arch of cd_ctrl is
    signal k_newCmd   : std_logic_vector(7 downto 0) := (others => '0');
    signal e_begin, e_ackRead, e_ackPend, e_ackSector, e_subDone, e_xaReset, e_xaStart : std_logic;
    signal e_newCmd   : std_logic_vector(7 downto 0);
+
+   -- save states
+   signal ss_idx      : unsigned(5 downto 0) := (others => '0');
+   signal ss_rbp      : unsigned(1 downto 0) := (others => '0');
+   signal ss_wbp      : unsigned(1 downto 0) := (others => '0');
+   signal ss_wdata    : std_logic_vector(31 downto 0) := (others => '0');
+   signal ss_we       : std_logic := '0';
+   signal ss_evC      : std_logic := '0';
+   signal ss_evA      : std_logic := '0';
+   signal ss_q        : std_logic_vector(31 downto 0);
 
    -- event vector and snapshots (state before the last edge this block handled)
    signal ev_now      : std_logic_vector(31 downto 0);
@@ -303,7 +329,8 @@ begin
    ev_now(9)  <= e_ackPend;
    ev_now(10) <= r_ackPendNext or k_ackPendNext;
    ev_now(11) <= newCD and not r_newCD_1;
-   ev_now(12) <= '1' when (r_driveBusy = '1' and r_driveDelay = 0 and fetchIdle = '1' and pC(0) = '0') else '0';
+   ev_now(12) <= '1' when (r_driveBusy = '1' and r_driveDelay = 0 and fetchIdle = '1' and pC(0) = '0' and
+                           drive_hold = '0') else '0';
    ev_now(13) <= eng_cont;
    ev_now(14) <= e_subDone and physWaitSub;
    ev_now(15) <= e_ackSector;
@@ -318,11 +345,57 @@ begin
    ev_now(24) <= isAudio;
    ev_now(25) <= dma_read;
    ev_now(26) <= SS_wren;
-   ev_now(31 downto 27) <= (others => '0');
+   ev_now(27) <= ss_evC;
+   ev_now(28) <= ss_evA;
+   ev_now(31 downto 29) <= (others => '0');
 
-   eng_start <= '1' when (reset = '1' or pB(4) = '1' or (ce = '1' and (e_begin = '1' or handleCommand = '1' or
+   eng_start <= '1' when (reset = '1' or pB(4) = '1' or ss_evC = '1' or ss_evA = '1' or
+                          (ce = '1' and (e_begin = '1' or handleCommand = '1' or
                           ev_now(5) = '1' or ev_now(6) = '1' or ev_now(7) = '1' or e_ackRead = '1' or e_ackPend = '1' or
                           ev_now(10) = '1' or ev_now(11) = '1' or ev_now(12) = '1' or eng_cont = '1' or ev_now(14) = '1'))) else '0';
+
+   -- save states: the register file window; calm = a clock at which the controller can be frozen
+   ss_rbyte <= ss_q(7 downto 0)   when ss_rbp = 0 else
+               ss_q(15 downto 8)  when ss_rbp = 1 else
+               ss_q(23 downto 16) when ss_rbp = 2 else
+               ss_q(31 downto 24);
+   calm     <= '1' when (busy = '0' and eng_start = '0' and pA = "00000" and pB = x"00" and pC = "0000000000000") else '0';
+
+   process (clk)
+   begin
+      if rising_edge(clk) then
+         ss_we  <= '0';
+         ss_evC <= '0';
+         ss_evA <= '0';
+         if (ss_we = '1') then
+            ss_idx <= ss_idx + 1;
+         end if;
+         if (ss_ctl_we = '1') then
+            if (ss_wbyte(7) = '0') then
+               ss_idx <= unsigned(ss_wbyte(5 downto 0));
+               ss_rbp <= "00";
+               ss_wbp <= "00";
+            elsif (ss_wbyte(0) = '0') then
+               ss_evC <= '1';
+            else
+               ss_evA <= '1';
+            end if;
+         end if;
+         if (ss_data_we = '1') then
+            ss_wdata <= ss_wdata(23 downto 0) & ss_wbyte;
+            ss_wbp   <= ss_wbp + 1;
+            if (ss_wbp = 3) then
+               ss_we <= '1';
+            end if;
+         end if;
+         if (ss_rd = '1') then
+            ss_rbp <= ss_rbp + 1;
+            if (ss_rbp = 3) then
+               ss_idx <= ss_idx + 1;
+            end if;
+         end if;
+      end if;
+   end process;
 
    -- engine I/O reads: snapshots of the state before the edge (this block's registers, the event vector, the
    -- command and parameter bytes); the rest is read live. Those inputs change only when the sector datapath works
@@ -609,7 +682,12 @@ begin
       io_rdata => io_rdata,
       io_waddr => io_waddr,
       io_wdata => io_wdata,
-      io_we    => io_we
+      io_we    => io_we,
+      ss_en    => ss_mode,
+      ss_idx   => ss_idx,
+      ss_we    => ss_we,
+      ss_wdata => ss_wdata,
+      ss_q     => ss_q
    );
 
 end architecture;

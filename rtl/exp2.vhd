@@ -14,8 +14,14 @@ entity exp2 is
       bus_dataWrite        : in  std_logic_vector(7 downto 0);
       bus_read             : in  std_logic;
       bus_write            : in  std_logic;
-      bus_dataRead         : out std_logic_vector(7 downto 0)
-      
+      bus_dataRead         : out std_logic_vector(7 downto 0);
+
+      -- Pocket save states: control byte at 0x1F803F00, only while the save-state routine runs (ss_mode)
+      ss_mode              : in  std_logic := '0';
+      ss_status            : in  std_logic_vector(7 downto 0) := (others => '0');
+      ss_cmd               : out std_logic_vector(7 downto 0) := (others => '0');
+      ss_cmd_we            : out std_logic := '0'
+
       --serial_newchar       : out std_logic := '0';
       --serial_newline       : out std_logic := '0';
       --serial_char          : out std_logic_vector(7 downto 0)
@@ -33,10 +39,12 @@ begin
          --serial_newchar <= '0';
          --serial_newline <= '0';
       
+         ss_cmd_we <= '0';
+
          if (reset = '1') then
-         
+
          elsif (ce = '1') then
-         
+
             bus_dataRead <= (others => '0');
 
             if (bus_read = '1') then
@@ -44,6 +52,14 @@ begin
                if (bus_addr = 16#21#) then
                   bus_dataRead <= x"0C";
                end if;
+               if (bus_addr = 16#1F00# and ss_mode = '1') then
+                  bus_dataRead <= ss_status;
+               end if;
+            end if;
+
+            if (bus_write = '1' and bus_addr = 16#1F00# and ss_mode = '1') then
+               ss_cmd    <= bus_dataWrite;
+               ss_cmd_we <= '1';
             end if;
             
             --if (bus_write = '1') then

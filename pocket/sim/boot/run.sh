@@ -1,8 +1,9 @@
 #!/bin/sh
 # Boot simulation of the Pocket core with the real BIOS (see tb_boot.vhd). Compiles the same source set as
-# pocket/src/fpga/psx_pocket.qip (reset-only savestates, black MDEC, small GTE), with the synthesis
+# pocket/src/fpga/psx_pocket.qip (reset-only savestates, full MDEC, small GTE), with the synthesis
 # translate_off regions removed (debug file output) and the simulation-only fixups of sim/gpu_vram.
 # usage: BIOS=<scph1001.bin> ALTERA_MF_DIR=<compiled altera_mf dir> [RTL_OVERRIDE="<file.vhd> ..."] [WORKDIR=<dir>] [VRAM_PSRAM=<vram_psram variant>] \
+#        [FAST_RESET=1] [SS_GENERICS="-gSS_ROUTINE=... -gSS_SAVE_MS=... | -gSS_LOAD=... -gSS_VERIFY=true -gSS_DUMP=..."] \
 #        pocket/sim/boot/run.sh [RUN_MS] [DUMP_EVERY]
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -14,7 +15,7 @@ work="${WORKDIR:-$here/work}"; mkdir -p "$work/src"; cd "$work"
 python3 - "$rtl" "$work/src" <<'EOF'
 import os, re, sys
 rtl, out = sys.argv[1], sys.argv[2]
-swap = {'savestates.vhd': 'savestates_reset.vhd', 'gte.vhd': 'gte_small.vhd', 'mdec.vhd': 'mdec_black.vhd'}
+swap = {'savestates.vhd': 'savestates_reset.vhd', 'gte.vhd': 'gte_small.vhd'}
 names = [n for n in os.listdir(rtl) if n.endswith('.vhd')]
 override = {os.path.basename(f): f for f in os.environ.get('RTL_OVERRIDE', '').split()}   # same-named replacements
 for n in names:
@@ -38,6 +39,13 @@ for n in os.listdir(out):
         s = s[:m.end()] + fn + re.sub(r'\bto_unsigned\(', 'to_unsigned_w(', s[m.end():])
         open(p, 'w').write(s)
 # simulation only (as in sim/gpu_vram): undriven inout record fields of the divider ports default to 'Z'
+# FAST_RESET=1 (simulation only): the reset sequence skips clearing SPU RAM, VRAM and main RAM (savestates FASTSIM;
+# the memory models start zeroed anyway), so the BIOS starts ~0.1 s earlier
+if os.environ.get('FAST_RESET') == '1':
+    p = os.path.join(out, 'psx_top.vhd')
+    s = open(p).read()
+    assert s.count('FASTSIM                 => is_simu,') == 1
+    open(p, 'w').write(s.replace('FASTSIM                 => is_simu,', "FASTSIM                 => '1',"))
 for m in ('poly', 'line'):
     p = os.path.join(out, 'gpu_%s.vhd' % m)
     s = open(p).read()
@@ -68,4 +76,4 @@ nvc --std=2008 $L -a --relaxed $S/RamMLAB.vhd $S/RamM10Kn.vhd $S/dpram.vhd $S/Sy
    $S/psx_mister.vhd
 nvc --std=2008 $L -a --relaxed "$core/psram_async.vhd" "${VRAM_PSRAM:-$core/vram_psram.vhd}" "$core/psx_pocket_core.vhd" \
    "$here/../vram_psram/psram_model.vhd" "$here/ram_model.vhd" "$here/tb_boot.vhd"
-nvc --std=2008 --ieee-warnings=off $L -H 3g -M 64m -e tb_boot -gRUN_MS=${1:-2000} -gDUMP_EVERY=${2:-20} -gDEBUG_SS=${DEBUG_SS:-0} -gTRACE_IO_N=${TRACE_IO_N:-0} -gTRACE_FROM_MS=${TRACE_FROM_MS:-0} -gFAST_SHELL=${FAST_SHELL:-false} -gSKIP_INTRO=${SKIP_INTRO:-false} -r
+nvc --std=2008 --ieee-warnings=off $L -H 3g -M 64m -e tb_boot -gRUN_MS=${1:-2000} -gDUMP_EVERY=${2:-20} -gDEBUG_SS=${DEBUG_SS:-0} -gTRACE_IO_N=${TRACE_IO_N:-0} -gTRACE_FROM_MS=${TRACE_FROM_MS:-0} -gFAST_SHELL=${FAST_SHELL:-false} -gSKIP_INTRO=${SKIP_INTRO:-false} $SS_GENERICS -r

@@ -21,6 +21,7 @@ entity mdec is
       bus_read             : in  std_logic;
       bus_write            : in  std_logic;
       bus_dataRead         : out std_logic_vector(31 downto 0);
+      ss_mode              : in  std_logic := '0';   -- Pocket save states (full MDEC only)
       
       dmaWriteRequest      : out std_logic;
       dmaReadRequest       : out std_logic;

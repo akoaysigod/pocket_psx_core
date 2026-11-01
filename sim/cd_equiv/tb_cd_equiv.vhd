@@ -225,7 +225,16 @@ entity tb_cd_equiv is
       PLAYLBA   : integer := 0;
       XAFILE    : integer := 1;
       XACHAN    : integer := 0;
-      OUTPRE    : string  := ""
+      OUTPRE    : string  := "";
+      -- save states (pocket/ss, docs/savestates.md): at the first interrupt poll from SSMS ms on (CPUSRC = 1, no
+      -- FREEZE) the CPU model saves the new instance's controller like the save-state routine, resets the instance,
+      -- and restores it; the reference waits meanwhile. Compare the summary with a run without SSMS.
+      SSMS      : integer := -1;
+      SSFIFO    : integer := 0;     -- 1: the save waits for a poll at which the new instance's data fifo holds bytes
+      SSNOFIFO  : integer := 0;     -- 1: the restore leaves the data fifo empty (negative test of SPLIT / SSFIFO)
+      -- > 0: a sector's last SPLIT bytes stay in the data fifo until the next interrupt poll (a game reading the rest
+      -- later); with SSMS / SSFIFO the save comes in between, the data checksum shows whether the bytes came back
+      SPLIT     : integer := 0
    );
 end entity;
 
@@ -241,6 +250,7 @@ architecture sim of tb_cd_equiv is
    signal reset     : std_logic := '1';
    signal ss_reset  : std_logic := '0';
    signal ce        : std_logic := '1';
+   signal ss_mode_n, ss_freeze_n, reset_new, hold_ref : std_logic := '0';   -- save-state test (SSMS)
    signal hascd_s   : std_logic := '1';
    signal spu_tick  : std_logic := '0';
    signal tickcnt   : integer range 0 to 767 := 0;
@@ -365,7 +375,7 @@ begin
          icd : entity work.cd_top_ref
          port map
          (
-            clk1x => clk1x, ce => ce, reset => reset,
+            clk1x => clk1x, ce => ce and not hold_ref, reset => reset,
             INSTANTSEEK => '0', FORCECDSPEED => "000", LIMITREADSPEED => '0', hasCD => hascd_s, LIDopen => '0',
             fastCD => '0', testSeek => '0', pauseOnCDSlow => '0', region => "00", region_out => o_region(i),
             pauseCD => o_pauseCD(i), Pause_idle_cd => o_pauseIdle(i), fullyIdle => o_fullyIdle(i), cdSlow => o_cdSlow(i),
@@ -386,7 +396,8 @@ begin
          generic map (SIM_FREEZE => FREEZE)
          port map
          (
-            clk1x => clk1x, clk_engine => clkeng, eng_busy => busy_new, ce => ce, reset => reset,
+            clk1x => clk1x, clk_engine => clkeng, eng_busy => busy_new, ce => ce, reset => reset or reset_new,
+            ss_mode => ss_mode_n, ss_freeze => ss_freeze_n, ss_quiet => open,
             INSTANTSEEK => '0', FORCECDSPEED => "000", LIMITREADSPEED => '0', hasCD => hascd_s, LIDopen => '0',
             fastCD => '0', testSeek => '0', pauseOnCDSlow => '0', region => "00", region_out => o_region(i),
             pauseCD => o_pauseCD(i), Pause_idle_cd => o_pauseIdle(i), fullyIdle => o_fullyIdle(i), cdSlow => o_cdSlow(i),
@@ -453,6 +464,9 @@ begin
       variable readdata : boolean := true;      -- request and read sector data on INT1
       variable s1, s2   : integer := 1;         -- random state
       variable ce_next  : integer := 4000;      -- clocks to the next ce = 0 burst
+      variable ss_done  : boolean := false;     -- SSMS: the save / restore has been made
+      variable rest     : integer := 0;         -- SPLIT: bytes of the last sector still to read
+      alias fifo_empty_new is <<signal .tb_cd_equiv.ginst(1).gnew.icd.FifoData_Empty : std_logic>>;   -- SSFIFO
 
       impure function rnd(n : integer) return integer is   -- 0 .. n-1
          variable r : real;
@@ -501,18 +515,10 @@ begin
          clk(1);
       end procedure;
 
-      -- request the sector data and read it through DMA (n bytes, n = 0: the size of the current mode)
-      procedure readsector(n : integer := 0) is
-         variable cnt : integer;
+      -- read n bytes of sector data through DMA
+      procedure readbytes(n : integer) is
       begin
-         wr(0, 0);
-         wr(3, 16#80#);
-         cnt := n;
-         if (cnt = 0) then
-            if ((mode / 32) mod 2 = 1) then cnt := 2340; else cnt := 2048; end if;
-         end if;
-         clk(8);
-         for i in 1 to cnt loop
+         for i in 1 to n loop
             dma_read <= '1';
             wait until rising_edge(clk1x);
             dma_read <= '0';
@@ -520,6 +526,27 @@ begin
             dbytes := dbytes + 1;
             if (rnd(64) = 0) then clk(1 + rnd(4)); end if;
          end loop;
+      end procedure;
+
+      -- request the sector data and read it through DMA (n bytes, n = 0: the size of the current mode)
+      procedure readsector(n : integer := 0) is
+         variable cnt : integer;
+      begin
+         readbytes(rest);                     -- SPLIT: the last sector's rest first
+         rest := 0;
+         wr(0, 0);
+         wr(3, 16#80#);
+         cnt := n;
+         if (cnt = 0) then
+            if ((mode / 32) mod 2 = 1) then cnt := 2340; else cnt := 2048; end if;
+         end if;
+         clk(8);
+         if (SPLIT > 0 and SPLIT < cnt) then
+            readbytes(cnt - SPLIT);
+            rest := SPLIT;
+         else
+            readbytes(cnt);
+         end if;
          sectors := sectors + 1;
       end procedure;
 
@@ -561,14 +588,113 @@ begin
          wr(0, 0);
       end procedure;
 
+      -- save states (SSMS): the save-state routine's CD part against the new instance
+      procedure ss_wait_frozen(ok : out boolean) is
+         variable st : std_logic_vector(7 downto 0);
+      begin
+         ok := false;
+         for i in 1 to 2000 loop
+            rdb(0, st);
+            if (st(2) = '0') then ok := true; exit; end if;
+         end loop;
+      end procedure;
+      procedure ss_cd(done : out boolean) is
+         type tbytes is array(natural range <>) of std_logic_vector(7 downto 0);
+         variable regs : tbytes(0 to 255);
+         variable v    : tbytes(0 to 8);
+         variable st, ie, sf : std_logic_vector(7 downto 0);
+         variable ok   : boolean;
+         variable fifo : tbytes(0 to 4095);
+         variable nf   : integer;
+      begin
+         done := false;
+         assert CPUSRC = 1 and not FREEZE report "SSMS needs CPUSRC=1 without FREEZE" severity failure;
+         hold_ref    <= '1';
+         ss_mode_n   <= '1';
+         ss_freeze_n <= '1';
+         ss_wait_frozen(ok);
+         if (not ok) then                        -- not quiet (an interrupt is due): try at the next poll
+            ss_mode_n <= '0'; ss_freeze_n <= '0'; hold_ref <= '0';
+            report "CD save state: not quiet, retry";
+            return;
+         end if;
+         -- save: index, IE, volumes / mute, the collect run, the register file
+         rdb(0, st);
+         wr(0, 0); rdb(3, ie);
+         wr(0, 1); rdb(1, v(0)); rdb(2, v(1)); rdb(3, v(2));
+         wr(0, 2); rdb(1, v(3)); rdb(2, v(4)); rdb(3, v(5));
+         wr(0, 3); rdb(1, v(6)); rdb(2, v(7)); rdb(3, v(8));
+         wr(0, 2); wr(1, 16#80#);
+         ss_wait_frozen(ok);
+         assert ok report "CD save state: collect run did not end" severity failure;
+         wr(1, 0);
+         wr(0, 0);
+         for i in 0 to 255 loop rdb(2, regs(i)); end loop;
+         -- the data fifo's unread bytes: window control 0x40, index 0 reads take them out (status bit 6: not empty),
+         -- index 1 writes put them back
+         wr(0, 2); wr(1, 16#40#);
+         wr(0, 0);
+         nf := 0;
+         loop
+            rdb(0, sf);
+            exit when sf(6) = '0';
+            rdb(2, fifo(nf));
+            nf := nf + 1;
+         end loop;
+         wr(0, 2); wr(1, 16#40#);
+         wr(0, 1);
+         for i in 0 to nf - 1 loop wr(1, to_integer(unsigned(fifo(i)))); end loop;
+         wr(0, 2); wr(1, 0);
+         report "CD save state: " & integer'image(nf) & " bytes in the data fifo";
+         -- a reset of the controller (as the core's in restore mode), still frozen afterwards
+         reset_new <= '1';
+         clk(20);
+         reset_new <= '0';
+         clk(200);
+         ss_wait_frozen(ok);
+         assert ok report "CD save state: not frozen after the reset" severity failure;
+         -- restore: the register file, the apply run, IE, volumes, mute, index
+         wr(0, 2); wr(1, 0);
+         wr(0, 1);
+         for w in 0 to 63 loop
+            for b in 3 downto 0 loop wr(1, to_integer(unsigned(regs(4 * w + b)))); end loop;
+         end loop;
+         wr(0, 2); wr(1, 16#81#);
+         ss_wait_frozen(ok);
+         assert ok report "CD save state: apply run did not end" severity failure;
+         wr(0, 2); wr(1, 16#40#);
+         wr(0, 1);
+         if (SSNOFIFO = 0) then
+            for i in 0 to nf - 1 loop wr(1, to_integer(unsigned(fifo(i)))); end loop;
+         end if;
+         wr(0, 2); wr(1, 0);
+         wr(0, 1); wr(2, to_integer(unsigned(ie(4 downto 0))));
+         wr(0, 2); wr(2, to_integer(unsigned(v(6)))); wr(3, to_integer(unsigned(v(7))));
+         wr(0, 3); wr(1, to_integer(unsigned(v(2)))); wr(2, to_integer(unsigned(v(8))));
+         wr(3, 16#20# + to_integer(unsigned(v(5)(0 downto 0))));
+         wr(0, 2); wr(2, to_integer(unsigned(v(0)))); wr(3, to_integer(unsigned(v(1))));
+         wr(0, 3); wr(1, to_integer(unsigned(v(4)))); wr(2, to_integer(unsigned(v(3))));
+         wr(0, to_integer(unsigned(st(1 downto 0))));
+         ss_mode_n <= '0'; ss_freeze_n <= '0'; hold_ref <= '0';
+         report "CD save state: saved, reset and restored the new instance's controller";
+         done := true;
+      end procedure;
+
       -- run n clocks, servicing interrupts (polled every 1000 clocks)
       procedure run(n : integer; quiet : boolean := true) is
          variable t : integer := 0;
+         variable d : boolean;
       begin
          while (t < n) loop
             clk(1000);
             t := t + 1000;
             service(quiet);
+            if (SSMS >= 0 and not ss_done and now >= SSMS * 1 ms and (SSFIFO = 0 or fifo_empty_new = '0')) then
+               ss_cd(d);
+               ss_done := d;
+            end if;
+            readbytes(rest);                  -- SPLIT: the rest of the last sector
+            rest := 0;
          end loop;
       end procedure;
 

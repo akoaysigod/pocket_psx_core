@@ -17,6 +17,7 @@
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
+use std.textio.all;
 
 entity psram_model is
    generic
@@ -28,7 +29,12 @@ entity psram_model is
       T_SP      : time := 3 ns;       -- setup to the clock
       T_CSP     : time := 4 ns;       -- CE# setup to the clock
       T_HD      : time := 2 ns;       -- hold from the clock
-      ROW_WORDS : integer := 128
+      ROW_WORDS : integer := 128;
+      -- save states (pocket/sim/boot): words 0 .. DUMP_WORDS - 1 loaded from LOAD_FILE at time 0 and written to
+      -- DUMP_FILE at a rising edge of dump (hex, one word per line)
+      LOAD_FILE  : string := "";
+      DUMP_FILE  : string := "psram_dump.hex";
+      DUMP_WORDS : integer := 16#40000#
    );
    port
    (
@@ -42,7 +48,8 @@ entity psram_model is
       oe_n  : in    std_logic;
       we_n  : in    std_logic;
       ub_n  : in    std_logic;
-      lb_n  : in    std_logic
+      lb_n  : in    std_logic;
+      dump  : in    std_logic := '0'
    );
 end entity;
 
@@ -62,6 +69,37 @@ architecture sim of psram_model is
    signal syncMode   : boolean;
 begin
    syncMode <= bcr(15) = '0';
+
+   process
+      file f      : text;
+      variable st : file_open_status;
+      variable l  : line;
+      variable w  : std_logic_vector(15 downto 0);
+      variable n  : integer := 0;
+   begin
+      if (LOAD_FILE /= "") then
+         file_open(st, f, LOAD_FILE, read_mode);
+         assert st = open_ok report "cannot open " & LOAD_FILE severity failure;
+         while not endfile(f) loop
+            readline(f, l);
+            hread(l, w);
+            mem(n) := w;
+            n := n + 1;
+         end loop;
+         file_close(f);
+         report "PSRAM loaded from " & LOAD_FILE & ": " & integer'image(n) & " words";
+      end if;
+      loop
+         wait until rising_edge(dump);
+         file_open(st, f, DUMP_FILE, write_mode);
+         for i in 0 to DUMP_WORDS - 1 loop
+            hwrite(l, mem(i));
+            writeline(f, l);
+         end loop;
+         file_close(f);
+         report "PSRAM dumped to " & DUMP_FILE;
+      end loop;
+   end process;
    dq <= driveS when syncMode else driveA;
 
    process (adv_n, a, dq, ce0_n, cre)

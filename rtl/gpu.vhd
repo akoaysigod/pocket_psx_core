@@ -79,6 +79,8 @@ entity gpu is
       bus_dataRead         : out std_logic_vector(31 downto 0);
       bus_stall            : out std_logic := '0';
       
+      ss_mode              : in  std_logic := '0';   -- Pocket save states: GP1(10h) 0/1/6/7 read display ranges, drawMode
+      
       dmaOn                : in  std_logic;
       gpu_dmaRequest       : out std_logic;
       DMA_GPU_waiting      : in  std_logic;
@@ -684,6 +686,12 @@ begin
                            
                            when 5 => --Get Drawing Offset
                               GPUREAD <= x"00" & "00" & std_logic_vector(drawingOffsetY) & std_logic_vector(drawingOffsetX);
+                           
+                           -- Pocket save states: write-only state for the save-state routine (ss_mode)
+                           when 0 => if (ss_mode = '1') then GPUREAD <= "0000000000000" & std_logic_vector(vramRange); end if;
+                           when 1 => if (ss_mode = '1') then GPUREAD <= x"00" & std_logic_vector(hDisplayRange); end if;
+                           when 6 => if (ss_mode = '1') then GPUREAD <= x"000" & std_logic_vector(vDisplayRange); end if;
+                           when 7 => if (ss_mode = '1') then GPUREAD <= x"0000" & "00" & std_logic_vector(drawMode); end if;
                            
                            when others => null;
                         end case;

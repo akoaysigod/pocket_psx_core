@@ -25,6 +25,11 @@ entity timer is
       bus_write            : in  std_logic;
       bus_dataRead         : out std_logic_vector(31 downto 0);
       
+      -- Pocket save states: ss_freeze stops counting; while the routine runs (ss_mode) MODE reads keep bits 12:11
+      -- and offset 0xC reads / loads MODE bits 12:10 and irqDone (bit 13)
+      ss_mode              : in  std_logic := '0';
+      ss_freeze            : in  std_logic := '0';
+      
 -- synthesis translate_off
       export_t_current0    : out unsigned(15 downto 0);
       export_t_current1    : out unsigned(15 downto 0);
@@ -147,7 +152,9 @@ begin
 
          elsif (ce = '1') then
          
-            timer2_subcount <= timer2_subcount + 1;
+            if (ss_freeze = '0') then
+               timer2_subcount <= timer2_subcount + 1;
+            end if;
             hblank_1        <= hblank;
             vblank_1        <= vblank;
             dotclock_1      <= dotclock;
@@ -210,6 +217,10 @@ begin
                end case;
             end if;
             
+            if (ss_freeze = '1') then
+               newTick := "000";
+            end if;
+            
             -- apply ticks
             for i in 0 to 2 loop
 
@@ -255,7 +266,7 @@ begin
             end loop;
             
             -- apply resets
-            if (timerArray(0).T_MODE(0) = '1') then
+            if (timerArray(0).T_MODE(0) = '1' and ss_freeze = '0') then
                if (timerArray(0).T_MODE(2 downto 1) = "01" or timerArray(0).T_MODE(2 downto 1) = "10") then
                   if (hblank_1 = '1' and hblank = '0') then 
                      timerArray(0).T_CURRENT <= (others => '0'); 
@@ -268,7 +279,7 @@ begin
                end if;
             end if;
             
-            if (timerArray(1).T_MODE(0) = '1') then
+            if (timerArray(1).T_MODE(0) = '1' and ss_freeze = '0') then
                if (timerArray(1).T_MODE(2 downto 1) = "01" or timerArray(1).T_MODE(2 downto 1) = "10") then
                   if (vblank_1 = '0' and vblank = '1') then 
                      timerArray(1).T_CURRENT <= (others => '0'); 
@@ -294,8 +305,14 @@ begin
                      when x"0" => bus_dataRead <= x"0000" & std_logic_vector(timerArray(channel).T_CURRENT);
                      when x"4" => 
                         bus_dataRead <= x"0000" & std_logic_vector(timerArray(channel).T_MODE);
-                        timerArray(channel).T_MODE(12 downto 11) <= "00";
+                        if (ss_mode = '0') then
+                           timerArray(channel).T_MODE(12 downto 11) <= "00";
+                        end if;
                      when x"8" => bus_dataRead <= x"0000" & std_logic_vector(timerArray(channel).T_TARGET);
+                     when x"C" =>
+                        if (ss_mode = '1') then
+                           bus_dataRead <= x"0000" & "00" & timerArray(channel).irqDone & std_logic_vector(timerArray(channel).T_MODE(12 downto 10)) & "0000000000";
+                        end if;
                      when others => null;
                   end case;
                end if;
@@ -315,6 +332,11 @@ begin
                         timerArray(channel).T_CURRENT            <= (others => '0');
                         timerArray(channel).blockNext            <= '1';
                      when x"8" => timerArray(channel).T_TARGET <= unsigned(bus_dataWrite(15 downto 0));
+                     when x"C" =>
+                        if (ss_mode = '1') then
+                           timerArray(channel).T_MODE(12 downto 10) <= unsigned(bus_dataWrite(12 downto 10));
+                           timerArray(channel).irqDone              <= bus_dataWrite(13);
+                        end if;
                      when others => null;
                   end case;
                end if;

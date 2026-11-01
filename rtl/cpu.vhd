@@ -22,7 +22,14 @@ entity cpu is
       irqRequest            : in  std_logic;
       dmaStallCPU           : in  std_logic;
       cpuPaused             : in  std_logic;
-      
+
+      -- Pocket save states: ss_irq is a hidden interrupt (taken like a hardware interrupt, only with SR.IEc = 1,
+      -- not visible in CAUSE) that vectors to the save-state routine at SS_VECTOR; ss_taken pulses when it is taken.
+      -- With ss_restore = '1' during reset the CPU starts at SS_VECTOR instead of the BIOS.
+      ss_irq                : in  std_logic;
+      ss_restore            : in  std_logic;
+      ss_taken              : out std_logic := '0';
+
       error                 : out std_logic := '0';
       error2                : out std_logic := '0';
       
@@ -155,7 +162,11 @@ architecture arch of cpu is
    signal exceptionNew3                : std_logic := '0';
    signal exceptionNew5                : std_logic := '0';
    signal exceptionNew                 : unsigned(4 downto 0) := (others => '0');
-   
+   -- save states: the current exception is the hidden save-state interrupt (vector SS_VECTOR: KSEG1, SDRAM above
+   -- the 2 MB of main RAM, reachable while psx_top's ss_mode unmasks RAM address bits 22:21)
+   constant SS_VECTOR                  : unsigned(31 downto 0) := x"A0200000";
+   signal ssExc                        : std_logic := '0';
+
    signal exception_SR                 : unsigned(31 downto 0) := (others => '0');
    signal exception_CAUSE              : unsigned(31 downto 0) := (others => '0');
    signal exception_EPC                : unsigned(31 downto 0) := (others => '0');
@@ -672,6 +683,7 @@ begin
    end generate; 
    
    FetchAddr       <= x"80000040" when (exceptionBreakpoint = '1') else
+                      SS_VECTOR   when (exception > 0 and ssExc = '1') else
                       x"BFC00180" when (exception > 0 and cop0_SR(22) = '1') else
                       x"80000080" when (exception > 0 and cop0_SR(22) = '0') else
                       PCbranch when branch = '1' else
@@ -685,7 +697,7 @@ begin
    mem1_address    <= FetchAddr;
 
    process (blockirq, cop0_SR, cop0_CAUSE, exception, stall, mem_done, mem_dataRead, memoryMuxStage4, fetchReady, stall1, opcode0, reset, FetchAddr, 
-            tag_q_b, blockirqCnt, FetchLastAddr, writebackInvalidateCacheEna, cacheHitTest)
+            tag_q_b, blockirqCnt, FetchLastAddr, writebackInvalidateCacheEna, cacheHitTest, ss_irq)
    begin
       PCnext          <= FetchAddr;
       fetchReadyNext  <= fetchReady;
@@ -716,7 +728,7 @@ begin
          tag_wren_a   <= '1';
       end if;
 
-      if (exception = 0 and blockirq = '0' and cop0_SR(0) = '1' and (cop0_SR(10 downto 8) and cop0_CAUSE(10 downto 8)) /= "000") then
+      if (exception = 0 and blockirq = '0' and cop0_SR(0) = '1' and ((cop0_SR(10 downto 8) and cop0_CAUSE(10 downto 8)) /= "000" or ss_irq = '1')) then
       
          if (stall = 0) then
             blockirqNext    <= '1';
@@ -804,6 +816,9 @@ begin
                      
             stall1         <= '0';
             PC             <= unsigned(ss_in(0)); -- x"BFC00000";
+            if (ss_restore = '1') then
+               PC          <= SS_VECTOR;
+            end if;
                            
             blockIRQ       <= '0'; -- todo: busy for savestate?
             blockirqCnt    <= 0;
@@ -2690,9 +2705,12 @@ begin
    process (clk1x)
    begin
       if (rising_edge(clk1x)) then
-      
+
+         ss_taken <= '0';
+
          if (reset = '1') then
-         
+
+            ssExc                <= '0';
             exception            <= unsigned(ss_in(24)(9 downto 5));
          
             cop0_BADVADDR        <= unsigned(ss_in(7));
@@ -2708,6 +2726,7 @@ begin
          
                exception           <= exceptionNew;
                exceptionBreakpoint <= EXEBreakpoint;
+               ssExc               <= '0';
                if (exceptionNew1 = '1') then    -- PC out of bounds
                   exceptionCode     <= x"6";
                   exceptionInstr    <= opcode2(27 downto 26);
@@ -2715,6 +2734,8 @@ begin
                   exception_branch  <= executeBranchTaken;
                   exception_brslot  <= executeBranchdelaySlot;
                elsif (exceptionNew5 = '1') then -- interrupt
+                  ssExc             <= ss_irq;   -- save-state interrupt: same entry, own vector
+                  ss_taken          <= ss_irq;
                   exceptionCode     <= x"0";
                   exceptionInstr    <= opcode1(27 downto 26);
                   exception_PC      <= pcOld1;

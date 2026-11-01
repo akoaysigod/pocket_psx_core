@@ -20,7 +20,14 @@ entity tb_boot is
       TRACE_IO_N    : integer := 0;       -- log the first TRACE_IO_N CPU accesses to I/O registers (1F80xxxx) with PC
       TRACE_FROM_MS : integer := 0;       -- ... starting at this time
       FAST_SHELL    : boolean := false;   -- skip the BIOS shell copy (see ram_model)
-      SKIP_INTRO    : boolean := false    -- skip the shell's boot intro (see ram_model)
+      SKIP_INTRO    : boolean := false;   -- skip the shell's boot intro (see ram_model)
+      -- save states (pocket/ss, docs/savestates.md). The testbench plays pocket_psx's part (request, pause, release,
+      -- restore boot); the memories are dumped to files instead of APF reading them over the bridge.
+      SS_ROUTINE    : string  := "";      -- routine image (hex words, pocket/ss/build.sh) loaded to SDRAM 0x200000
+      SS_SAVE_MS    : integer := 0;       -- > 0: save at this time; the memories are dumped while the core is frozen
+      SS_LOAD       : string  := "";      -- file prefix of such a dump: restore boot from it
+      SS_VERIFY     : boolean := false;   -- with SS_LOAD: the routine collects the restored state into 0x240000
+      SS_DUMP       : string  := "ss"     -- file prefix of this run's dump (at the freeze, or when the restore is done)
    );
 end entity;
 
@@ -93,6 +100,20 @@ architecture sim of tb_boot is
    signal ddr_rd_cnt, ddr_rdy_cnt : integer := 0;
    signal ddr_last_addr : std_logic_vector(28 downto 0) := (others => '0');
 
+   -- save states
+   function bool2sl(b : boolean) return std_logic is begin if b then return '1'; else return '0'; end if; end function;
+   function ssfile(prefix : string; suffix : string) return string is
+   begin
+      if (prefix = "") then return ""; else return prefix & suffix; end if;
+   end function;
+   signal ss_req, ss_released, tb_pause, ss_dumpnow : std_logic := '0';
+   signal ss_restore     : std_logic := bool2sl(SS_LOAD /= "");
+   signal tb_paused      : std_logic;
+   signal ss_cmd         : std_logic_vector(7 downto 0);
+   signal ss_cmd_we      : std_logic;
+   type tspu is array(0 to 2 ** 19 - 1) of natural range 0 to 255;
+   shared variable spumem : tspu := (others => 0);
+
 begin
 
    ---------------------------------------------------------------- clocks / reset
@@ -129,7 +150,7 @@ begin
    idut : entity work.psx_pocket_core
    port map
    (
-      clk1x => clk1x, clk2x => clk2x, clk3x => clk3x, clkvid => clkvid, reset => reset, isPaused => open,
+      clk1x => clk1x, clk2x => clk2x, clk3x => clk3x, clkvid => clkvid, reset => reset, isPaused => tb_paused, pause => tb_pause,
       ram_refresh => ram_refresh, ram_dataWrite => ram_dataWrite, ram_dataRead32 => ram_dataRead32, ram_Adr => ram_Adr,
       ram_cntDMA => ram_cntDMA, ram_be => ram_be, ram_rnw => ram_rnw, ram_ena => ram_ena, ram_dma => ram_dma,
       ram_cache => ram_cache, ram_done => ram_done,
@@ -156,13 +177,16 @@ begin
       KeyTriangle => '0', KeyCircle => '0', KeyCross => '0', KeySquare => '0', KeySelect => '0', KeyStart => '0',
       KeyRight => '0', KeyLeft => '0', KeyUp => '0', KeyDown => '0', KeyR1 => '0', KeyR2 => '0', KeyR3 => '0',
       KeyL1 => '0', KeyL2 => '0', KeyL3 => '0',
-      sound_out_left => snd_l, sound_out_right => snd_r, debug_out => core_debug
+      sound_out_left => snd_l, sound_out_right => snd_r, debug_out => core_debug,
+      ss_req => ss_req, ss_restore => ss_restore, ss_status => "000000" & ss_released & ss_restore, ss_cmd => ss_cmd,
+      ss_cmd_we => ss_cmd_we
    );
 
    ---------------------------------------------------------------- main RAM / BIOS
    ram_addr27 <= "00" & ram_Adr;
    iram : entity work.ram_model
-   generic map (FAST_SHELL => FAST_SHELL, SKIP_INTRO => SKIP_INTRO)
+   generic map (FAST_SHELL => FAST_SHELL, SKIP_INTRO => SKIP_INTRO, ROUTINE_FILE => SS_ROUTINE,
+                LOAD_FILE => ssfile(SS_LOAD, "_ram.hex"), SET_VERIFY => SS_VERIFY, DUMP_FILE => SS_DUMP & "_ram.hex")
    port map
    (
       clk => clk1x, clk3x => clk3x, addr => ram_addr27, req => ram_ena, ram_dma => ram_dma, ram_dmacnt => ram_cntDMA,
@@ -170,14 +194,12 @@ begin
       done => ram_done, cache_wr => cache_wr, cache_data => cache_data, cache_addr => cache_addr,
       dma_wr => dma_wr, dma_data => dma_data, reqprocessed => dma_reqprocessed,
       ram_dmafifo_adr => ram_dmafifo_adr, ram_dmafifo_data => ram_dmafifo_data, ram_dmafifo_empty => ram_dmafifo_empty,
-      ram_dmafifo_read => ram_dmafifo_read, preload_shell => preload_shell
+      ram_dmafifo_read => ram_dmafifo_read, preload_shell => preload_shell, dump => ss_dumpnow
    );
    preload_shell <= '1' when (core_debug(255 downto 224) = x"BFC0700C") else '0';   -- CPU PC (debug_out row 8)
 
    ---------------------------------------------------------------- SPU RAM (sdram.sv ch3: request pulse, one ready pulse later)
    process (clk1x)
-      type tspu is array(0 to 2 ** 19 - 1) of natural range 0 to 255;
-      variable mem : tspu := (others => 0);
       variable cnt : integer := -1;
       variable a   : integer;
       variable w   : boolean;
@@ -190,7 +212,7 @@ begin
             cnt := 6;
             if w then
                for i in 0 to 3 loop
-                  if (spu_be(i) = '1') then mem((a + i) mod 2 ** 19) := to_integer(unsigned(spu_dataWrite(i * 8 + 7 downto i * 8))); end if;
+                  if (spu_be(i) = '1') then spumem((a + i) mod 2 ** 19) := to_integer(unsigned(spu_dataWrite(i * 8 + 7 downto i * 8))); end if;
                end loop;
             end if;
             spu_accesses <= spu_accesses + 1;
@@ -200,9 +222,116 @@ begin
             cnt := -1;
             spu_done <= '1';
             for i in 0 to 3 loop
-               spu_dataRead(i * 8 + 7 downto i * 8) <= std_logic_vector(to_unsigned(mem((a + i) mod 2 ** 19), 8));
+               spu_dataRead(i * 8 + 7 downto i * 8) <= std_logic_vector(to_unsigned(spumem((a + i) mod 2 ** 19), 8));
             end loop;
          end if;
+      end if;
+   end process;
+
+   -- save states: SPU RAM loaded at time 0 / dumped at ss_dumpnow (one little-endian word per line)
+   process
+      file f      : text;
+      variable st : file_open_status;
+      variable l  : line;
+      variable w  : std_logic_vector(31 downto 0);
+      variable n  : integer := 0;
+   begin
+      if (SS_LOAD /= "") then
+         file_open(st, f, SS_LOAD & "_spu.hex", read_mode);
+         assert st = open_ok report "cannot open " & SS_LOAD & "_spu.hex" severity failure;
+         while not endfile(f) loop
+            readline(f, l);
+            hread(l, w);
+            for i in 0 to 3 loop spumem(n * 4 + i) := to_integer(unsigned(w(i * 8 + 7 downto i * 8))); end loop;
+            n := n + 1;
+         end loop;
+         file_close(f);
+         report "SPU RAM loaded: " & integer'image(n) & " words";
+      end if;
+      loop
+         wait until rising_edge(ss_dumpnow);
+         file_open(st, f, SS_DUMP & "_spu.hex", write_mode);
+         for i in 0 to 2 ** 17 - 1 loop
+            for j in 0 to 3 loop w(j * 8 + 7 downto j * 8) := std_logic_vector(to_unsigned(spumem(i * 4 + j), 8)); end loop;
+            hwrite(l, w);
+            writeline(f, l);
+         end loop;
+         file_close(f);
+         report "SPU RAM dumped";
+      end loop;
+   end process;
+
+   ---------------------------------------------------------------- save states: pocket_psx's part
+   process (clk1x)
+      type tss is (S_IDLE, S_REQ, S_RUN, S_FROZEN, S_RESUME, S_RESTORE, S_DONE);
+      alias pc is <<signal .tb_boot.idut.ipsx.ipsx_top.icpu.PC : unsigned(31 downto 0)>>;
+      variable st     : tss := S_IDLE;
+      variable cmd    : integer;
+      variable frozen : integer := 0;
+      variable l      : line;
+   begin
+      if rising_edge(clk1x) then
+         ss_dumpnow <= '0';
+         cmd     := -1;
+         if (ss_cmd_we = '1') then
+            write(l, string'("SS cyc ")); write(l, cycles); write(l, string'(" pc ")); hwrite(l, std_logic_vector(pc));
+            write(l, string'(" control <= ")); hwrite(l, ss_cmd);
+            writeline(output, l); flush(output);
+            if (ss_cmd(7) = '0') then cmd := to_integer(unsigned(ss_cmd(3 downto 0))); end if;
+         end if;
+         case (st) is
+            when S_IDLE =>
+               if (SS_LOAD /= "") then
+                  st := S_RESTORE;
+               elsif (SS_SAVE_MS > 0 and now >= SS_SAVE_MS * 1 ms) then
+                  report "SS: save requested";
+                  ss_req <= '1';
+                  st     := S_REQ;
+               end if;
+            when S_REQ =>
+               if (cmd = 1) then
+                  ss_req <= '0';
+                  st     := S_RUN;
+               end if;
+            when S_RUN =>
+               if (cmd = 2) then
+                  report "SS: state captured, pausing";
+                  tb_pause <= '1';
+                  st       := S_FROZEN;
+               elsif (cmd = 4) then
+                  report "SS: retry";
+                  ss_req <= '1';
+                  st     := S_REQ;
+               end if;
+            when S_FROZEN =>
+               if (tb_paused = '1') then
+                  if (frozen = 0) then
+                     report "SS: core paused, memories dumped";
+                     ss_dumpnow <= '1';
+                  end if;
+                  frozen := frozen + 1;
+                  if (frozen = 1000) then
+                     tb_pause    <= '0';
+                     ss_released <= '1';
+                     st          := S_RESUME;
+                  end if;
+               end if;
+            when S_RESUME =>
+               if (cmd = 3) then
+                  report "SS: save done, back in the game";
+                  ss_released <= '0';
+                  st          := S_DONE;
+               end if;
+            when S_RESTORE =>
+               if (cmd = 3) then
+                  report "SS: restore done, back in the game; memories dumped";
+                  ss_restore <= '0';
+                  ss_dumpnow    <= '1';
+                  st         := S_DONE;
+               end if;
+            when S_DONE =>
+               null;
+         end case;
       end if;
    end process;
 
@@ -223,10 +352,10 @@ begin
    dq1 <= c1.dq_out when c1.dq_oe = '1' else (others => 'Z');
    c0.dq_in <= dq0;
    c1.dq_in <= dq1;
-   im0 : entity work.psram_model generic map (INIT => '0')
-      port map (a => c0.a, dq => dq0, clk => c0.clk, cre => c0.cre, adv_n => c0.adv_n, ce0_n => c0.ce0_n, ce1_n => c0.ce1_n, oe_n => c0.oe_n, we_n => c0.we_n, ub_n => c0.ub_n, lb_n => c0.lb_n);
-   im1 : entity work.psram_model generic map (INIT => '0')
-      port map (a => c1.a, dq => dq1, clk => c1.clk, cre => c1.cre, adv_n => c1.adv_n, ce0_n => c1.ce0_n, ce1_n => c1.ce1_n, oe_n => c1.oe_n, we_n => c1.we_n, ub_n => c1.ub_n, lb_n => c1.lb_n);
+   im0 : entity work.psram_model generic map (INIT => '0', LOAD_FILE => ssfile(SS_LOAD, "_vram0.hex"), DUMP_FILE => SS_DUMP & "_vram0.hex")
+      port map (a => c0.a, dq => dq0, clk => c0.clk, cre => c0.cre, adv_n => c0.adv_n, ce0_n => c0.ce0_n, ce1_n => c0.ce1_n, oe_n => c0.oe_n, we_n => c0.we_n, ub_n => c0.ub_n, lb_n => c0.lb_n, dump => ss_dumpnow);
+   im1 : entity work.psram_model generic map (INIT => '0', LOAD_FILE => ssfile(SS_LOAD, "_vram1.hex"), DUMP_FILE => SS_DUMP & "_vram1.hex")
+      port map (a => c1.a, dq => dq1, clk => c1.clk, cre => c1.cre, adv_n => c1.adv_n, ce0_n => c1.ce0_n, ce1_n => c1.ce1_n, oe_n => c1.oe_n, we_n => c1.we_n, ub_n => c1.ub_n, lb_n => c1.lb_n, dump => ss_dumpnow);
 
    ---------------------------------------------------------------- activity counters
    process (clk1x)

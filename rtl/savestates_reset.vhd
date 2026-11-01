@@ -18,6 +18,7 @@ entity savestates is
       clk2xIndex              : in  std_logic;  
       ce                      : in  std_logic;  
       reset_in                : in  std_logic;
+      skip_clear              : in  std_logic := '0';   -- Pocket save-state restore: memories already hold the state
       reset_out               : out std_logic := '0';
       ss_reset                : out std_logic := '0';
          
@@ -404,7 +405,7 @@ begin
                end if;
             
             when LOADMEMORY_NEXT =>
-               if ((FASTSIM = '0' and ((exeMode = '0' and savetype_counter < SAVETYPESCOUNT) or (exeMode = '1' and savetype_counter < 16))) or 
+               if (skip_clear = '0') and ((FASTSIM = '0' and ((exeMode = '0' and savetype_counter < SAVETYPESCOUNT) or (exeMode = '1' and savetype_counter < 16))) or 
                    (FASTSIM = '1' and savetype_counter < 14 and resetMode = '1') or 
                    (FASTSIM = '1' and savetype_counter < 15 and resetMode = '0')) then
                   ddr3_ADDR      <= std_logic_vector(to_unsigned(savestate_address + savetypes(savetype_counter).offset, 26));

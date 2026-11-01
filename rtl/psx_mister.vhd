@@ -272,6 +272,12 @@ entity psx_mister is
       validSStates          : out std_logic_vector(3 downto 0);
       rewind_on             : in  std_logic;
       rewind_active         : in  std_logic;
+      -- Pocket save states (see psx_top)
+      ss_req                : in  std_logic;
+      ss_restore            : in  std_logic;
+      ss_status             : in  std_logic_vector(7 downto 0);
+      ss_cmd                : out std_logic_vector(7 downto 0);
+      ss_cmd_we             : out std_logic;
       -- cheats
       cheat_clear           : in  std_logic;
       cheats_enabled        : in  std_logic;
@@ -653,6 +659,11 @@ begin
       rewind_on             => rewind_on,    
       -- cheats
       rewind_active         => rewind_active,
+      ss_req                => ss_req,
+      ss_restore            => ss_restore,
+      ss_status             => ss_status,
+      ss_cmd                => ss_cmd,
+      ss_cmd_we             => ss_cmd_we,
       cheat_clear           => cheat_clear,
       cheats_enabled        => cheats_enabled,
       cheat_on              => cheat_on,

@@ -3,6 +3,7 @@
 *.bin
 !pocket/dist/Cores/*/icon.bin
 !pocket/dist/Platforms/_images/*.bin
+!pocket/dist/Assets/psx/*/ss_routine.bin
 *.cue
 /games/
 
