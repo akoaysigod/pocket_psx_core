@@ -20,7 +20,9 @@ entity tb_boot is
       TRACE_IO_N    : integer := 0;       -- log the first TRACE_IO_N CPU accesses to I/O registers (1F80xxxx) with PC
       TRACE_FROM_MS : integer := 0;       -- ... starting at this time
       FAST_SHELL    : boolean := false;   -- skip the BIOS shell copy (see ram_model)
-      SKIP_INTRO    : boolean := false    -- skip the shell's boot intro (see ram_model)
+      SKIP_INTRO    : boolean := false;   -- skip the shell's boot intro (see ram_model)
+      PAUSE_AT_MS   : integer := 0;       -- > 0: raise the core's pause input (Pocket menu open) at this time ...
+      PAUSE_MS      : integer := 0        -- ... for this long; isPaused changes are printed
    );
 end entity;
 
@@ -92,6 +94,7 @@ architecture sim of tb_boot is
    signal preload_shell : std_logic := '0';
    signal ddr_rd_cnt, ddr_rdy_cnt : integer := 0;
    signal ddr_last_addr : std_logic_vector(28 downto 0) := (others => '0');
+   signal pause_in, is_paused : std_logic := '0';
 
 begin
 
@@ -129,7 +132,8 @@ begin
    idut : entity work.psx_pocket_core
    port map
    (
-      clk1x => clk1x, clk2x => clk2x, clk3x => clk3x, clkvid => clkvid, reset => reset, isPaused => open,
+      clk1x => clk1x, clk2x => clk2x, clk3x => clk3x, clkvid => clkvid, reset => reset,
+      pause => pause_in, isPaused => is_paused,
       ram_refresh => ram_refresh, ram_dataWrite => ram_dataWrite, ram_dataRead32 => ram_dataRead32, ram_Adr => ram_Adr,
       ram_cntDMA => ram_cntDMA, ram_be => ram_be, ram_rnw => ram_rnw, ram_ena => ram_ena, ram_dma => ram_dma,
       ram_cache => ram_cache, ram_done => ram_done,
@@ -158,6 +162,24 @@ begin
       KeyL1 => '0', KeyL2 => '0', KeyL3 => '0',
       sound_out_left => snd_l, sound_out_right => snd_r, debug_out => core_debug
    );
+
+   -- the Pocket menu (pause) and the core's answer
+   process (clk1x)
+   begin
+      if rising_edge(clk1x) then
+         pause_in <= '0';
+         if (PAUSE_AT_MS > 0 and now >= PAUSE_AT_MS * 1 ms and now < (PAUSE_AT_MS + PAUSE_MS) * 1 ms) then
+            pause_in <= '1';
+         end if;
+      end if;
+   end process;
+   process (is_paused, pause_in)
+      variable l : line;
+   begin
+      write(l, string'("PAUSE t=")); write(l, now / 1 us); write(l, string'(" us pause ")); write(l, pause_in);
+      write(l, string'(" isPaused ")); write(l, is_paused);
+      writeline(output, l);
+   end process;
 
    ---------------------------------------------------------------- main RAM / BIOS
    ram_addr27 <= "00" & ram_Adr;
