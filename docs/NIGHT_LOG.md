@@ -1092,3 +1092,33 @@ implementation:
   test build (version 1) load.
 - Version 0.3 (core.json, info.txt, README status): the seed 9 bitstream repackaged,
   releases/akoaysigod.PSX_0.3_ss-feasibility-963385f_seed9.zip. See docs/savestates.md.
+
+## 2026-11-04: junk on the bottom line in King's Field (worktree visual-issue, branch visual-issue from main 0.3)
+- Report: frozen junk at the bottom of the picture, intro and gameplay, handheld and Pocket screenshots, not docked.
+- Cause: King's Field's libgpu (March 1995) clamps the display end to line 255 in PutDispEnv, so GP1(07) is 16..255:
+  239 lines. Running that code from OPEN.EXE, GAME.EXE and END.EXE with screen = 0 gives 239 in all three; SotN's
+  library (May 1995) gives 16..256. The core sends the game's range, the scaler mode is 240 lines tall, and the last
+  line is never written. Why docked hides it is not known.
+- Fix: fixedVBlank on (make_core_wrapper.py, psx_pocket_core.vhd regenerated): 240 lines every frame in NTSC, lines
+  outside the game's range black. gpu.vhd limits it to NTSC: it sends 288 lines in PAL, into a 240-line mode.
+- Side effect: NTSC pictures now sit at their real position (24..248 gets 8 black lines on top; 18..258 loses its
+  last 2 lines).
+- Scratch test, two gpu_videoout_async, setting on vs off (16..255, 24..248, 18..258, 480i): videoout_reports equal
+  on every compared clock; the only request field that differs is xpos (overlays and gun crosshair, not VRAM fetch).
+- Local test (not in the repo): whole gpu.vhd, set up over the CPU bus, into pocket_video. 16..255, 16..256,
+  24..248 give 240 lines of 320; PAL 35..291 stays 256; setting off gives 239 (the bug). PASS 5 / 5. Mutation: NTSC
+  limit removed: PAL 288 lines, FAIL.
+- Fits, frozen copy of this tree, one at a time: seed 9 misses timing (-0.308 setup, core[2]; hold -0.095), seeds
+  1-5 worst -0.099 / -0.944 / -0.544 / -0.742 / -0.893, seed 6 clean (worst +0.054, a hold path; setup +0.189; no
+  critical warnings; 18,063 ALMs, 0.3 was 18,074). No area penalty.
+- Hardware: the user tried two games on the seed 9 timing-miss build and saw no issues, then tested seed 6, which
+  is released as version 0.3.1 (core.json only; the bitstream is the seed 6 fit).
+- Sims on 982aade (2026-11-05), the 2026-10-18/19 list with the same arguments: cd_arith, cd_cdda, cd_xa, cpu_mul,
+  fifo_m10k, gpu_div3 poly / line, gte_small seeds 3 / 4, joypad_pad, mdec_black, memcard2_off, memctrl,
+  ram_m10kn, savestates_reset, spu_equiv, validbits256, pocket_buttons, pocket_cd, pocket_diag, pocket_memcard,
+  pocket_ss, pocket_video, video_chain, vram_psram, gpu_vram (seed 7 x 10, seed 8 x 15), sdram gap 2: all PASS.
+  cd_equiv FREEZE scripts 0-3 (RANDCE 0): PASS. pocket/sim/boot 400 ms: log identical to 0.3's (024ea37).
+- dma_equiv seed 2 1M FAILS: 10 MISMATCH lines from 52 us (busRd), then the known requestedDwords stop at
+  14.09 ms. It fails the same way on 024ea37 (0.3), 1d2a8b6 (0.2.1) and 3e4be8d (the area pass, #11), although the 2026-10-18/19 entry
+  says seed 2 1M PASS. dma.vhd is not touched here. Cause not looked at.
+- Not run: spu_timing (no PASS / FAIL, spu.vhd unchanged since 0.3) and audio48 (needs an input file).

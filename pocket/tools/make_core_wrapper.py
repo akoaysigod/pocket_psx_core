@@ -20,7 +20,7 @@ TIE = {
  'enableNeGconRumble': "'0'", 'fpscountOn': "'0'", 'cdslowOn': "'0'", 'testSeek': "'0'", 'pauseOnCDSlow': "'0'",
  'errorOn': "'0'", 'LBAOn': "'0'", 'PATCHSERIAL': "'0'", 'noTexture': "'0'", 'textureFilter': '"00"',
  'textureFilterStrength': '"00"', 'textureFilter2DOff': "'0'", 'dither24': "'0'", 'render24': "'0'",
- 'drawSlow': "'0'", 'syncVideoOut': "'0'", 'syncInterlace': "'0'", 'rotate180': "'0'", 'fixedVBlank': "'0'",
+ 'drawSlow': "'0'", 'syncVideoOut': "'0'", 'syncInterlace': "'0'", 'rotate180': "'0'", 'fixedVBlank': "'1'",
  'vCrop': '"00"', 'hCrop': "'0'", 'SPUon': "'1'", 'SPUIRQTrigger': "'0'", 'SPUSDRAM': "'1'", 'REVERBOFF': "'0'",
  'REPRODUCIBLESPUDMA': "'0'", 'WIDESCREEN': '"00"', 'oldGPU': "'0'", 'biosregion': '"00"', 'region': '"00"',
  'isPal': "'0'", 'pal60': "'0'",

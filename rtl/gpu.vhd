@@ -1914,7 +1914,8 @@ begin
    videoout_settings.pal60                   <= pal60;
    videoout_settings.syncInterlace           <= syncInterlace;
    videoout_settings.rotate180               <= rotate180;
-   videoout_settings.fixedVBlank             <= fixedVBlank;
+   -- NTSC only: fixed blanking sends 288 lines in PAL, and the Pocket's scaler modes are 240 lines tall
+   videoout_settings.fixedVBlank             <= fixedVBlank and not GPUSTAT_PalVideoMode;
    videoout_settings.vCrop                   <= vCrop;
    videoout_settings.hCrop                   <= hCrop;
    videoout_settings.dither24                <= dither24;

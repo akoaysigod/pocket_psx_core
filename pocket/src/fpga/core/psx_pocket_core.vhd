@@ -165,7 +165,7 @@ begin
       syncVideoOut => '0',
       syncInterlace => '0',
       rotate180 => '0',
-      fixedVBlank => '0',
+      fixedVBlank => '1',
       vCrop => "00",
       hCrop => '0',
       SPUon => '1',
