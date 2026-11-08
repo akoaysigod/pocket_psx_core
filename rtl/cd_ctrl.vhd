@@ -242,8 +242,11 @@ begin
    -- except a CD-DA report: its 8 bytes follow its interrupt on 8 edges, and Setloc / Setfilter: they read their
    -- parameters on the edges after their interrupt and reset the parameter fifo at the last one, which must not
    -- wipe the next command's parameters (cdda_rep, set by the engine for both).
+   -- A delivered pending interrupt (INT1 of a sector) has its byte pushed at the edge after its fifo reset; while that
+   -- edge is still to come (k_ackPendNext, see below) the hold stays.
    irq_evt  <= '1' when (show = '1' and (pB(0) = '1' or pB(1) = '1' or pB(2) = '1' or pB(3) = '1' or pB(5) = '1' or
-                                         pB(7) = '1' or pC(1) = '1' or pC(2) = '1')) or r_ackPendNext = '1' else '0';
+                                         pB(7) = '1' or pC(1) = '1' or pC(2) = '1')) or r_ackPendNext = '1' or
+                        k_ackPendNext = '1' else '0';
    quiet    <= '1' when SIM_FREEZE else not (irq_wait or irq_run or cdda_rep);
    world    <= (not busy) when SIM_FREEZE else '1';
    show     <= not busy;
@@ -327,7 +330,7 @@ begin
    ev_now(7)  <= '1' when (r_working = '1' and workIsGetID = '1' and workDelay >= 2 and workDelay <= 10) else '0';
    ev_now(8)  <= e_ackRead;
    ev_now(9)  <= e_ackPend;
-   ev_now(10) <= r_ackPendNext or k_ackPendNext;
+   ev_now(10) <= (r_ackPendNext or k_ackPendNext) and not e_ackPend;   -- not at its reset's edge (see k_ackPendNext)
    ev_now(11) <= newCD and not r_newCD_1;
    ev_now(12) <= '1' when (r_driveBusy = '1' and r_driveDelay = 0 and fetchIdle = '1' and pC(0) = '0' and
                            drive_hold = '0') else '0';
@@ -443,13 +446,21 @@ begin
 
          -- hardware: ackPendingIRQ -> ackPendingIRQNext is a one clock pipeline with cd_top's interrupt logic (which
          -- would raise the interrupt again and again otherwise): it runs in real time; the engine gets the event
-         -- at its next edge (kept while it runs)
+         -- at its next edge (kept while it runs). Both pulses of one interrupt can come while the engine runs (or the
+         -- second at the edge that uses the kept first): the fifo reset (ackPendingIRQ) is then handled at that edge
+         -- and the byte (ackPendingIRQNext) at the one after, as in the original a clock apart. In one run the reset
+         -- strobe would win over the write and the interrupt would come without its byte (Vagrant Story: INT1
+         -- without status, its CD driver waits for the read bit forever).
          if (not SIM_FREEZE) then
             if (ce = '1') then
                r_ackPendNext <= ackPendingIRQ;
             end if;
             if (busy = '0' and ce = '1') then
-               k_ackPendNext <= '0';
+               if (e_ackPend = '1' and (r_ackPendNext = '1' or k_ackPendNext = '1')) then
+                  k_ackPendNext <= '1';
+               else
+                  k_ackPendNext <= '0';
+               end if;
             elsif (busy = '1' and r_ackPendNext = '1') then
                k_ackPendNext <= '1';
             end if;
