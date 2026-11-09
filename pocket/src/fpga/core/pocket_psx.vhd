@@ -150,8 +150,8 @@ architecture arch of pocket_psx is
    signal loading_1x     : std_logic_vector(2 downto 0) := (others => '0');
 
    -- loader FIFO (BIOS, save-state routine, save-state load): {SDRAM word address(22:0), data(31:0)}
-   signal fifo_wrreq     : std_logic := '0';
-   signal fifo_data      : std_logic_vector(54 downto 0) := (others => '0');
+   signal fifo_wrreq     : std_logic;
+   signal fifo_data      : std_logic_vector(54 downto 0);
    signal fifo_wrfull    : std_logic;
    signal fifo_rdreq     : std_logic := '0';
    signal fifo_q         : std_logic_vector(54 downto 0);
@@ -160,7 +160,6 @@ architecture arch of pocket_psx is
    type tLoad is (L_IDLE, L_READ, L_WRITE, L_WAIT, L_RDWAIT);
    signal lstate         : tLoad := L_IDLE;
    signal l_addr         : unsigned(26 downto 0) := (others => '0');
-   signal l_data         : std_logic_vector(31 downto 0) := (others => '0');
    signal l_req          : std_logic := '0';
    signal loader_busy    : std_logic;
 
@@ -346,21 +345,28 @@ begin
 
    ---------------------------------------------------------------- loader: bridge writes -> SDRAM
    -- APF writes 32-bit words of data slot 1 (BIOS) at bridge addresses 0x00000000.. (bridge_endian_little = 1),
-   -- of the save-state routine at 0x10000000.., and of a save state to load at 0x50000000.. (see map_sdram)
+   -- of the save-state routine at 0x10000000.., and of a save state to load at 0x50000000.. (see map_sdram).
+   -- They go straight into the load FIFO (its RAM registers data and wrreq).
+   process (all)
+      variable v  : integer range 0 to 2;
+      variable sa : unsigned(24 downto 0);
+   begin
+      map_sdram(bridge_addr, v, sa);
+      fifo_data  <= std_logic_vector(sa(24 downto 2)) & bridge_wr_data;
+      fifo_wrreq <= '0';
+      if (bridge_wr = '1' and v /= 0 and fifo_wrfull = '0') then
+         fifo_wrreq <= '1';
+      end if;
+   end process;
+
    process (clk_74a)
       variable v  : integer range 0 to 2;
       variable sa : unsigned(24 downto 0);
    begin
       if rising_edge(clk_74a) then
-         fifo_wrreq <= '0';
          map_sdram(bridge_addr, v, sa);
-         if (bridge_wr = '1' and v /= 0) then
-            if (fifo_wrfull = '1') then
-               overflow <= '1';
-            else
-               fifo_wrreq <= '1';
-               fifo_data  <= std_logic_vector(sa(24 downto 2)) & bridge_wr_data;
-            end if;
+         if (bridge_wr = '1' and v /= 0 and fifo_wrfull = '1') then
+            overflow <= '1';
          end if;
          if (bridge_wr = '1' and bridge_addr(31 downto 28) = x"1") then
             ss_helper <= '1';
@@ -426,7 +432,6 @@ begin
                lstate <= L_WRITE;
             when L_WRITE =>
                l_addr   <= "00" & unsigned(fifo_q(54 downto 32)) & "00";
-               l_data   <= fifo_q(31 downto 0);
                l_rnw    <= '0';
                l_req    <= '1';
                lstate   <= L_WAIT;
@@ -453,7 +458,8 @@ begin
    -- sdram.sv takes one request per one-cycle ch3_req pulse and answers with one ch3_ready pulse, like the core's
    -- spuram_ena/spuram_done.
    ch3_addr <= std_logic_vector(l_addr) when (psx_reset = '1' or ss_frozen = '1') else std_logic_vector(SPURAM_BASE + resize(unsigned(spu_Adr), 27));
-   ch3_din  <= l_data                   when (psx_reset = '1' or ss_frozen = '1') else spu_dataWrite;
+   -- the loader's write data is the FIFO word: q holds until the next rdreq, which waits for ch3_ready
+   ch3_din  <= fifo_q(31 downto 0)      when (psx_reset = '1' or ss_frozen = '1') else spu_dataWrite;
    ch3_be   <= "1111"                   when (psx_reset = '1' or ss_frozen = '1') else spu_be;
    ch3_req  <= l_req                    when (psx_reset = '1' or ss_frozen = '1') else spu_ena;
    ch3_rnw  <= l_rnw                    when (psx_reset = '1' or ss_frozen = '1') else spu_rnw;

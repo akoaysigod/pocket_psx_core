@@ -176,9 +176,17 @@ begin
 
    cmp : process (clk2x)
       variable l : line;
+      variable r, n : tout;
    begin
       if rising_edge(clk2x) then
-         if (o_ref /= o_new) then
+         -- addresses count only where the receivers sample them: the DDR3 address with ddr3_RD / ddr3_WE
+         -- (vram_cdc, vram_psram), the SPU RAM address with its request (spu.vhd)
+         r := o_ref; n := o_new;
+         if (r.ddr3_RD = '0' and r.ddr3_WE = '0') then r.ddr3_ADDR := (others => '0'); end if;
+         if (n.ddr3_RD = '0' and n.ddr3_WE = '0') then n.ddr3_ADDR := (others => '0'); end if;
+         if (r.SPURAM_request = '0') then r.SPURAM_Adr := (others => '0'); end if;
+         if (n.SPURAM_request = '0') then n.SPURAM_Adr := (others => '0'); end if;
+         if (r /= n) then
             if (mismatches < 10) then
                write(l, string'("MISMATCH at ") & time'image(now)); writeline(output, l);
             end if;

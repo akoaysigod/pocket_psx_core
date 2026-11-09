@@ -372,13 +372,13 @@ architecture arch of cpu is
    signal EXEBreakpoint                : std_logic := '0';
    
    --MULT/DIV
+   -- Pocket: one value per result source (MULT / MULTU wrote hi / lo the same way, as did DIV / DIVU). No special
+   -- case for division by zero or 0x80000000 / -1: the 33-bit divider gives the R3000's results there too
+   -- (quotient -1, or +1 for a negative dividend, and remainder = dividend; quotient 0x80000000, remainder 0).
    type CPU_HILOCALC is
    (
-      HILOCALC_MULT, 
-      HILOCALC_MULTU,
-      HILOCALC_DIV,  
-      HILOCALC_DIVU,
-      HILOCALC_DIV0
+      HILOCALC_MUL,
+      HILOCALC_DIV
    );
    signal hilocalc                     : CPU_HILOCALC;
    
@@ -394,8 +394,6 @@ architecture arch of cpu is
    signal DIVdivisor                   : signed(32 downto 0);
    signal DIVquotient                  : signed(32 downto 0);
    signal DIVremainder                 : signed(32 downto 0);    
-   signal DIV0quotient                 : unsigned(31 downto 0);
-   signal DIV0remainder                : unsigned(31 downto 0);    
          
    -- stage 4 
    -- scratchpad
@@ -1887,11 +1885,8 @@ begin
             
             if (hiloWait = 2) then
                case (hilocalc) is
-                  when HILOCALC_MULT  => hi <=   unsigned(mulResult(63 downto 32));   lo <=    unsigned(mulResult(31 downto 0));
-                  when HILOCALC_MULTU => hi <=   unsigned(mulResult(63 downto 32));   lo <=    unsigned(mulResult(31 downto 0));
+                  when HILOCALC_MUL   => hi <=   unsigned(mulResult(63 downto 32));   lo <=    unsigned(mulResult(31 downto 0));
                   when HILOCALC_DIV   => hi <=  unsigned(DIVremainder(31 downto  0)); lo <=   unsigned(DIVquotient(31 downto 0));
-                  when HILOCALC_DIVU  => hi <=  unsigned(DIVremainder(31 downto  0)); lo <=   unsigned(DIVquotient(31 downto 0));
-                  when HILOCALC_DIV0  => hi <=           DIV0remainder;               lo <=            DIV0quotient;
                end case;
             end if;
             
@@ -2010,7 +2005,7 @@ begin
                   
                   -- new mul/div
                   if (EXEcalcMULT = '1') then
-                     hilocalc <= HILOCALC_MULT;
+                     hilocalc <= HILOCALC_MUL;
                      mulSigned <= '1';
                      mul1     <= value1;
                      mul2     <= value2;
@@ -2021,7 +2016,7 @@ begin
                   end if;
                   
                   if (EXEcalcMULTU = '1') then
-                     hilocalc <= HILOCALC_MULTU;
+                     hilocalc <= HILOCALC_MUL;
                      mulSigned <= '0';
                      mul1     <= value1;
                      mul2     <= value2;
@@ -2031,40 +2026,9 @@ begin
                      end if;
                   end if;
                   
-                  if (EXEcalcDIV = '1') then
+                  if (EXEcalcDIV = '1' or EXEcalcDIVU = '1') then   -- the divider starts with DIVstart (below)
                      hiloWait    <= 37;
-                     if (value2 = 0) then
-                        hilocalc      <= HILOCALC_DIV0;
-                        DIV0remainder <= value1;
-                        if (signed(value1) >= 0) then
-                           DIV0quotient <= (others => '1');
-                        else
-                           DIV0quotient <= x"00000001";
-                        end if;
-                     elsif (value1 = x"80000000" and value2 = x"FFFFFFFF") then
-                        hilocalc      <= HILOCALC_DIV0;
-                        DIV0quotient  <= x"80000000";
-                        DIV0remainder <= (others => '0');
-                     else
-                        hilocalc    <= HILOCALC_DIV;
-                        --DIVstart    <= '1';
-                        --DIVdividend <= resize(signed(value1), 33);
-                        --DIVdivisor  <= resize(signed(value2), 33);
-                     end if;
-                  end if;
-                  
-                  if (EXEcalcDIVU = '1') then
-                     hiloWait    <= 37;
-                     if (value2 = 0) then
-                        hilocalc      <= HILOCALC_DIV0;
-                        DIV0remainder <= value1;
-                        DIV0quotient  <= (others => '1');
-                     else
-                        hilocalc    <= HILOCALC_DIVU;
-                        --DIVstart    <= '1';
-                        --DIVdividend <= '0' & signed(value1);
-                        --DIVdivisor  <= '0' & signed(value2);
-                     end if;
+                     hilocalc    <= HILOCALC_DIV;
                   end if;
                   
                   if (EXEhiUpdate = '1') then hi <= value1; end if;

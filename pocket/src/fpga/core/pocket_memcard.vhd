@@ -34,7 +34,7 @@ entity pocket_memcard is
       aux_req        : out std_logic := '0';
       aux_we         : out std_logic := '0';
       aux_addr       : out std_logic_vector(20 downto 0) := (others => '0');
-      aux_din        : out std_logic_vector(31 downto 0) := (others => '0');
+      aux_din        : out std_logic_vector(31 downto 0);     -- the FIFO word: q holds until the next rdreq
       aux_dout       : in  std_logic_vector(31 downto 0);
       aux_done       : in  std_logic;
       card_write     : in  std_logic             -- vram_psram: core write to the card region taken
@@ -60,8 +60,8 @@ architecture arch of pocket_memcard is
    end procedure;
 
    -- load FIFO: {PSRAM word address(20:0), data(31:0)}
-   signal fifo_wrreq  : std_logic := '0';
-   signal fifo_data   : std_logic_vector(52 downto 0) := (others => '0');
+   signal fifo_wrreq  : std_logic;
+   signal fifo_data   : std_logic_vector(52 downto 0);
    signal fifo_wrfull : std_logic;
    signal fifo_rdreq  : std_logic := '0';
    signal fifo_q      : std_logic_vector(52 downto 0);
@@ -79,29 +79,34 @@ architecture arch of pocket_memcard is
    type tState is (IDLE, FIFO_WAIT, FIFO_WRITE, MEM_WAIT, READ_WAIT, PF_WAIT);
    signal state       : tState := IDLE;
 
-   -- prefetched word
+   -- prefetched word (its data is aux_dout: vram_psram holds it, and any other aux access clears pf_valid)
    signal pf_valid    : std_logic := '0';
    signal pf_dirty    : std_logic := '0';
    signal pf_addr     : unsigned(20 downto 0) := (others => '0');
-   signal pf_data     : std_logic_vector(31 downto 0) := (others => '0');
 
 begin
 
+   aux_din <= fifo_q(31 downto 0);
+
    ---------------------------------------------------------------- clk_74a
+   -- bridge writes go straight into the load FIFO (its RAM registers data and wrreq)
+   process (all)
+      variable v : std_logic;
+      variable p : std_logic_vector(20 downto 0);
+   begin
+      map_addr(bridge_addr, v, p);
+      fifo_data  <= p & bridge_wr_data;
+      fifo_wrreq <= bridge_wr and v and not fifo_wrfull;
+   end process;
+
    process (clk_74a)
       variable v : std_logic;
       variable p : std_logic_vector(20 downto 0);
    begin
       if rising_edge(clk_74a) then
-         fifo_wrreq <= '0';
          map_addr(bridge_addr, v, p);
-         if (bridge_wr = '1' and v = '1') then
-            if (fifo_wrfull = '1') then
-               overflow <= '1';
-            else
-               fifo_wrreq <= '1';
-               fifo_data  <= p & bridge_wr_data;
-            end if;
+         if (bridge_wr = '1' and v = '1' and fifo_wrfull = '1') then
+            overflow <= '1';
          end if;
 
          rd_1 <= bridge_rd;
@@ -155,7 +160,7 @@ begin
                   elsif (rd_tog_s(2) /= rd_ack) then
                      if (pf_valid = '1' and pf_addr = unsigned(rd_addr)) then
                         -- prefetch hit: answer now, prefetch the next word
-                        rd_data  <= pf_data;
+                        rd_data  <= aux_dout;
                         rd_ack   <= rd_tog_s(2);
                         pf_valid <= '0';
                         pf_addr  <= pf_addr + 1;
@@ -184,7 +189,6 @@ begin
                   aux_req  <= '1';
                   aux_we   <= '1';
                   aux_addr <= fifo_q(52 downto 32);
-                  aux_din  <= fifo_q(31 downto 0);
                   state    <= MEM_WAIT;
 
                when MEM_WAIT =>
@@ -206,7 +210,6 @@ begin
                when PF_WAIT =>
                   if (aux_done = '1') then
                      aux_req  <= '0';
-                     pf_data  <= aux_dout;
                      pf_valid <= not pf_dirty;
                      state    <= IDLE;
                   end if;

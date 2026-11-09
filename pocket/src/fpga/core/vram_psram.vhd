@@ -119,7 +119,7 @@ architecture arch of vram_psram is
    -- core request slot
    signal slot       : std_logic := '0';   -- a core request is waiting or running
    signal slotWe     : std_logic := '0';
-   signal slotAddr   : unsigned(19 downto 0) := (others => '0');   -- 64-bit word address: region(2:0) & offset
+   signal slotAddr   : unsigned(19 downto 0);   -- 64-bit word address of a write: region(2:0) & offset (rAddr(20:1))
    signal slotData   : std_logic_vector(63 downto 0) := (others => '0');
    signal slotBe     : std_logic_vector(7 downto 0) := (others => '0');
    signal remaining  : unsigned(9 downto 0) := (others => '0');    -- PSRAM words of a core read not started yet
@@ -173,6 +173,10 @@ begin
    cram0_we_n   <= o_we_n;   cram1_we_n   <= o_we_n;
    cram0_lb_n   <= o_be_n(0); cram0_ub_n  <= o_be_n(1);
    cram1_lb_n   <= o_be_n(2); cram1_ub_n  <= o_be_n(3);
+
+   -- the slot's address is only used while it holds a write, and rAddr (set with it when the request is taken)
+   -- only moves for reads
+   slotAddr <= rAddr(20 downto 1);
 
    process (clk)
    begin
@@ -438,7 +442,6 @@ begin
             slot     <= '1';
             ddr_busy <= '1';
             slotWe   <= ddr_we;
-            slotAddr <= unsigned(ddr_addr(19 downto 17)) & unsigned(ddr_addr(16 downto 0));
             slotData <= ddr_din;
             slotBe   <= ddr_be;
             rAddr    <= '0' & unsigned(ddr_addr(19 downto 17)) & unsigned(ddr_addr(16 downto 0)) & '0';

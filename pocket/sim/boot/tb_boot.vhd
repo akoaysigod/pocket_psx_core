@@ -534,7 +534,7 @@ begin
          alias p_ss   is <<signal .tb_boot.idut.ipsx.ipsx_top.savestate_pause : std_logic>>;
          alias r_int  is <<signal .tb_boot.idut.ipsx.ipsx_top.reset_intern : std_logic>>;
          alias ss_typ is <<signal .tb_boot.idut.ipsx.ipsx_top.isavestates.savetype_counter : integer>>;
-         alias ss_cnt is <<signal .tb_boot.idut.ipsx.ipsx_top.isavestates.count : integer>>;
+         alias ss_adr is <<signal .tb_boot.idut.ipsx.ipsx_top.isavestates.RAMAddrNext : unsigned(18 downto 0)>>;
          alias ss_req is <<signal .tb_boot.idut.ipsx.ipsx_top.isavestates.SS_SPURAM_request : std_logic>>;
          alias ss_dn  is <<signal .tb_boot.idut.ipsx.ipsx_top.isavestates.SS_SPURAM_done : std_logic>>;
          alias ss_sdd is <<signal .tb_boot.idut.ipsx.ipsx_top.isavestates.sdram_done : std_logic>>;
@@ -555,7 +555,7 @@ begin
                write(l, string'(" last ")); hwrite(l, ddr_last_addr); write(l, string'(" busy ")); write(l, ddr_busy);
                write(l, string'(" rd ")); write(l, ddr_rd); write(l, string'(" vramwr ")); write(l, vram_writes);
                write(l, string'(" spu ")); write(l, spu_accesses);
-               write(l, string'(" | ss type ")); write(l, ss_typ); write(l, string'(" count ")); write(l, ss_cnt);
+               write(l, string'(" | ss type ")); write(l, ss_typ); write(l, string'(" addr ")); write(l, to_integer(ss_adr));
                write(l, string'(" spureq ")); write(l, ss_req); write(l, string'(" spudone ")); write(l, ss_dn);
                write(l, string'(" sdram_done ")); write(l, ss_sdd); write(l, string'(" wren ")); write(l, ss_wr);
                writeline(output, l); flush(output);

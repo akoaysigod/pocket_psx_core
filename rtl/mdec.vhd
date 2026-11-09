@@ -67,8 +67,10 @@ architecture arch of mdec is
    signal rec_signed          : std_logic := '0';
    signal rec_bit15           : std_logic := '0';
       
-   signal RamYUVaddrA         : unsigned(4 downto 0) := (others => '0');
-   signal RamYUVdataA         : std_logic_vector(31 downto 0) := (others => '0');
+   -- the YUV and scale tables are written with the word and index that also go into the save-state copy (RamSS*):
+   -- every write loads RamSSaddrA / RamSSdataA on the same clock, and each RAM takes them only with its own wren
+   signal RamYUVaddrA         : unsigned(4 downto 0);
+   signal RamYUVdataA         : std_logic_vector(31 downto 0);
    signal RamYUVwrite         : std_logic := '0';     
    signal RamYUVaddrB         : unsigned(6 downto 0) := (others => '0');
    signal RamYUVdataB         : std_logic_vector(7 downto 0); 
@@ -137,10 +139,10 @@ architecture arch of mdec is
    signal IDCTi_dataO_b       : std_logic_vector(10 downto 0) := (others => '0');
                               
    signal scaleT_address_a    : std_logic_vector(5 downto 0) := (others => '0');
-   signal scaleT_address_Wr   : std_logic_vector(5 downto 0) := (others => '0');
+   signal scaleT_address_Wr   : std_logic_vector(5 downto 0);
    signal scaleT_data_a       : std_logic_vector(15 downto 0) := (others => '0');
-   signal scaleT_data_aFirst  : std_logic_vector(15 downto 0) := (others => '0');
-   signal scaleT_data_aNext   : std_logic_vector(15 downto 0) := (others => '0');
+   signal scaleT_data_aFirst  : std_logic_vector(15 downto 0);
+   signal scaleT_data_aNext   : std_logic_vector(15 downto 0);
    signal scaleT_wren_a       : std_logic := '0';
       
    signal idct_block          : integer range 0 to 5;
@@ -390,8 +392,6 @@ begin
          elsif (SS_wren = '1') then
          
             if (SS_Adr >= 16 and SS_Adr < 48) then
-               RamYUVaddrA <= resize(SS_Adr - 16, 5);
-               RamYUVdataA <= SS_DataWrite;
                RamYUVwrite <= '1';
                RamSSaddrA  <= '0' & resize(SS_Adr - 16, 5);
                RamSSdataA  <= SS_DataWrite;
@@ -399,9 +399,6 @@ begin
             end if;
             
             if (SS_Adr >= 64 and SS_Adr < 96) then
-               scaleT_address_Wr  <= std_logic_vector(SS_Adr(4 downto 0)) & '0';
-               scaleT_data_aFirst <= SS_DataWrite(15 downto  0);
-               scaleT_data_aNext  <= SS_DataWrite(31 downto 16);
                scaleT_wren_a      <= '1';
                RamSSaddrA  <= '1' & resize(SS_Adr - 64, 5);
                RamSSdataA  <= SS_DataWrite;
@@ -457,8 +454,6 @@ begin
             
                when RECEIVE_YUV =>
                   if (FifoIn_Empty = '0') then
-                     RamYUVaddrA <= recCount;
-                     RamYUVdataA <= FifoIn_Dout;
                      RamYUVwrite <= '1';                     
                      RamSSaddrA  <= '0' & recCount;
                      RamSSdataA  <= FifoIn_Dout;
@@ -472,9 +467,6 @@ begin
                   
                when RECEIVE_SCALE =>
                   if (FifoIn_Empty = '0') then
-                     scaleT_address_Wr  <= std_logic_vector(recCount) & '0';
-                     scaleT_data_aFirst <= FifoIn_Dout(15 downto  0);
-                     scaleT_data_aNext  <= FifoIn_Dout(31 downto 16);
                      scaleT_wren_a      <= '1';
                      RamSSaddrA  <= '1' & recCount;
                      RamSSdataA  <= FifoIn_Dout;
@@ -569,6 +561,8 @@ begin
    );
    
    RamYUVaddrB <= '0' & currentCoeff(5 downto 0) when (currentBlock >= 2) else '1' & currentCoeff(5 downto 0);
+   RamYUVaddrA <= RamSSaddrA(4 downto 0);
+   RamYUVdataA <= RamSSdataA;
    
    iramSS: entity work.dpram_dif
    generic map 
@@ -707,6 +701,9 @@ begin
    
 -------------------------
    
+   scaleT_address_Wr  <= std_logic_vector(RamSSaddrA(4 downto 0)) & '0';
+   scaleT_data_aFirst <= RamSSdataA(15 downto  0);
+   scaleT_data_aNext  <= RamSSdataA(31 downto 16);
    scaleT_address_a <= scaleT_address_WR(5 downto 1) & '1' when (clk2xIndex = '1') else scaleT_address_WR(5 downto 1) & '0';
    scaleT_data_a    <= scaleT_data_aNext                   when (clk2xIndex = '1') else scaleT_data_aFirst;
    

@@ -379,6 +379,8 @@ architecture arch of cd_top is
    signal sectorBufferFilled        : std_logic := '0';
    
    signal sectorBuffers_addrA       : std_logic_vector(12 downto 0) := (others => '0');
+   -- the sector word read on the previous clock (or a save state's word): the data for the sector buffers, cd_xa
+   -- (XA_data) and the CD audio FIFO (CDDA_data), each of which takes it only with its write strobe
    signal sectorBuffers_DataA       : std_logic_vector(31 downto 0) := (others => '0');
    signal sectorBuffers_wrenA       : std_logic;
    signal sectorBuffers_addrB       : std_logic_vector(12 downto 0);
@@ -1238,6 +1240,7 @@ begin
          
          sectorBuffer_wrenA  <= '0';
          sectorBuffers_wrenA <= '0';
+         sectorBuffers_DataA <= sectorBuffer_DataB;
          
          error               <= '0';
          
@@ -1617,7 +1620,6 @@ begin
                   sectorBuffers(to_integer(writeSectorPointer))(procCount) <= sectorBuffer_DataB;
                   -- synthesis translate_on
                   sectorBuffers_addrA <= std_logic_vector(writeSectorPointer & to_unsigned(procCount, 10));
-                  sectorBuffers_DataA <= sectorBuffer_DataB;
                   sectorBuffers_wrenA <= '1';
                   if (procCount = (procSize - 1)) then
                      sectorProcessState  <= SPROC_IDLE;
@@ -1652,7 +1654,6 @@ begin
                      XA_start            <= '1';
                   end if;
                   XA_write <= '1';
-                  XA_data  <= sectorBuffer_DataB;
                   XA_addr  <= procCount;
                   
                when SPROC_CDDAFIRST =>
@@ -1668,7 +1669,6 @@ begin
                      sectorProcessState  <= SPROC_IDLE;
                   end if;
                   CDDA_write <= '1';
-                  CDDA_data  <= sectorBuffer_DataB;
                   
             end case;
 
@@ -1758,6 +1758,8 @@ begin
 --##############################################################
    
    XA_reset <= reset or softReset or startReading or startPlaying or cmdResetXa or seekOnDiskDrive;
+   XA_data   <= sectorBuffers_DataA;
+   CDDA_data <= sectorBuffers_DataA;
    
    icd_xa : entity work.cd_xa
    port map
