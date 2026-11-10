@@ -142,10 +142,12 @@ architecture arch of savestates is
       LOADMEMORY_WRITE_NEXT
    );
    signal state : tstate := IDLE;
-   
-   signal count               : integer range 0 to 524288 := 0;
-   signal maxcount            : integer range 0 to 524288;
-   
+
+   -- The original's word counter (count, from 2 up to the type's size in steps of 2) is derived from RAMAddrNext,
+   -- which advances in step with it: RAMAddrNext = count for types 12, 15 and 16 (16: modulo 2^19, so its last
+   -- count wraps it to 0) and 2 * count for type 14 (four 16-bit SPU RAM words per 64-bit step). Only these four
+   -- types are ever visited.
+
    -- must check if savestate is valid at reset time and keep track of it, because we cannot check at runtime
    signal ssValid             : std_logic_vector(3 downto 0) := (others => '0');
    signal ssValidCnt          : integer range 0 to 3;
@@ -162,9 +164,8 @@ architecture arch of savestates is
    signal SS_wren_2x          : std_logic_vector(SAVETYPESCOUNT - 1 downto 0);
    signal SS_rden_2x          : std_logic_vector(SAVETYPESCOUNT - 1 downto 0);
    
-   signal unstallwait         : integer range 0 to 67108863 := 0;
-   
-   signal ddr3_ADDR_save      : std_logic_vector(25 downto 0) := (others => '0');
+   signal unstallwait         : integer range 0 to 1023 := 0;   -- only ever loaded with 1023
+
    signal ddr3_DOUT_saved     : std_logic_vector(63 downto 0);
    signal dwordcounter        : integer range 0 to 1 := 0;
    signal SPUwordcounter      : integer range 0 to 3 := 0;
@@ -200,7 +201,10 @@ begin
    savestate_busy <= '0' when state = IDLE else '1';
 
    ddr3_BURSTCNT <= x"01";
-   
+
+   -- the SPU samples the address only with SS_SPURAM_request; RAMAddrNext holds it until the SPU answers
+   SS_SPURAM_Adr <= std_logic_vector(RAMAddrNext(17 downto 0) & '0');
+
    validSStates <= ssValid;
 
    process (clk1x)
@@ -377,8 +381,9 @@ begin
                   if (ddr3_DOUT(63 downto 32) = std_logic_vector(to_unsigned(STATESIZE, 32))) then
                      ssValid(ssValidCnt) <= '1';
                   end if;
+                  -- ddr3_ADDR only matters with ddr3_RD / ddr3_WE (vram_cdc and vram_psram sample it then), and
+                  -- in reset mode the next DDR3 access is a VRAM write that sets its own address
                   if (ssValidCnt = 3) then
-                     ddr3_ADDR      <= std_logic_vector(to_unsigned(savestate_address, 26));
                      state          <= LOAD_HEADERAMOUNTCHECK;
                   else
                      ddr3_ADDR      <= std_logic_vector(unsigned(ddr3_ADDR) + to_unsigned(SAVESTATESIZE, 26));
@@ -408,11 +413,8 @@ begin
                if (skip_clear = '0') and ((FASTSIM = '0' and ((exeMode = '0' and savetype_counter < SAVETYPESCOUNT) or (exeMode = '1' and savetype_counter < 16))) or 
                    (FASTSIM = '1' and savetype_counter < 14 and resetMode = '1') or 
                    (FASTSIM = '1' and savetype_counter < 15 and resetMode = '0')) then
-                  ddr3_ADDR      <= std_logic_vector(to_unsigned(savestate_address + savetypes(savetype_counter).offset, 26));
                   ddr3_RD        <= not resetMode;
                   state          <= LOADMEMORY_READ;
-                  count          <= 2;
-                  maxcount       <= savetypes(savetype_counter).size;
                   RAMAddrNext    <= (others => '0');
                   dwordcounter   <= 0;
                else
@@ -423,7 +425,6 @@ begin
                end if;
             
             when LOADMEMORY_READ =>
-               ddr3_ADDR_save <= ddr3_ADDR;
                if (ddr3_DOUT_READY = '1' or resetMode = '1') then
                   state             <= LOADMEMORY_WRITE;
                   
@@ -436,7 +437,8 @@ begin
                   end if;
                   
                   if (savetype_counter = 14) then -- spuram
-                     if (useSPUSDRAM = '1' or count <= 1024 or count > 16#1C000#) then
+                     -- here RAMAddrNext = 2 * count - 4: count <= 1024 or count > 16#1C000#
+                     if (useSPUSDRAM = '1' or RAMAddrNext < 2048 or RAMAddrNext >= 16#38000#) then
                         dwordcounter   <= 1;
                         state          <= LOADMEMORY_WRITE_SPURAM; 
                         SPUwordcounter <= 0;
@@ -486,19 +488,17 @@ begin
             when LOADMEMORY_WRITE_SPURAM =>
                state               <= LOADMEMORY_WAIT_SPURAM;
                SS_SPURAM_dataWrite <= ddr3_DOUT_saved(SPUwordcounter * 16 + 15 downto SPUwordcounter * 16);
-               SS_SPURAM_Adr       <= std_logic_vector(RAMAddrNext(17 downto 0) & '0');
                SS_SPURAM_request   <= '1';
                SS_SPURAM_rnw       <= '0';
-               RAMAddrNext         <= RAMAddrNext + 1;
-            
-            when LOADMEMORY_WAIT_SPURAM => 
+
+            when LOADMEMORY_WAIT_SPURAM =>
                if (SPURAM_done2X = '1') then
+                  RAMAddrNext <= RAMAddrNext + 1;
                   if (SPUwordcounter = 3) then
                      state <= LOADMEMORY_WRITE_NEXT;
-                     if (FASTSIM = '1' and count = 1024) then
-                        count          <= count + 16#1C000# - 1024;
-                        RAMAddrNext    <= RAMAddrNext + (16#38000# - 2048);
-                        ddr3_ADDR_save <= std_logic_vector(unsigned(ddr3_ADDR_save) + 16#1C000# - 1024);
+                     -- count = 1024 (RAMAddrNext = 2 * count - 1 before this word's increment)
+                     if (FASTSIM = '1' and RAMAddrNext = 2047) then
+                        RAMAddrNext    <= RAMAddrNext + (16#38000# - 2048 + 1);
                      end if;
                   else
                      state <= LOADMEMORY_WRITE_SPURAM;
@@ -511,10 +511,11 @@ begin
                if (dwordcounter < 1) then
                   dwordcounter <= dwordcounter + 1;
                else
-                  ddr3_ADDR  <= std_logic_vector(unsigned(ddr3_ADDR_save) + 2);
-                  if (count < maxcount) then
+                  -- count < size of the type
+                  if ((savetype_counter = 12 and RAMAddrNext < 256) or
+                      (savetype_counter = 16 and RAMAddrNext /= 0) or
+                      (savetype_counter /= 12 and savetype_counter /= 16 and RAMAddrNext(18) = '0')) then
                      state          <= LOADMEMORY_READ;
-                     count          <= count + 2;
                      dwordcounter   <= 0;
                      ddr3_RD        <= not resetMode;
                   else 
