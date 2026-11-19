@@ -49,12 +49,24 @@ begin
       variable l : line;
       variable cyc : integer := 0;
       variable allEq : boolean;
+      -- A pixel of an untextured polygon carries left-over texture coordinates (u, v, u11, v11, uAcc, vAcc)
+      -- that the pixel pipeline does not use. The Pocket gpu_poly receives the vertices straight into its
+      -- working set, so these left-overs differ from the original's; they are not compared.
+      function ev(t : integer; e : std_logic_vector(127 downto 0)) return std_logic_vector is
+         variable r : std_logic_vector(127 downto 0) := e;
+      begin
+         if (MODULE = 0 and t = 0 and e(59) = '0') then
+            r(58 downto 43) := (others => '0');
+            r(95 downto 64) := (others => '0');
+         end if;
+         return r;
+      end function;
    begin
       if rising_edge(clk2x) then
          cyc := cyc + 1;
          for t in 0 to 5 loop
-            if (ev_valid_ref(t) = '1') then qref(t)(wr(t) mod QN) := ev_ref(t); wr(t) := wr(t) + 1; end if;
-            if (ev_valid_new(t) = '1') then qnew(t)(wn(t) mod QN) := ev_new(t); wn(t) := wn(t) + 1; end if;
+            if (ev_valid_ref(t) = '1') then qref(t)(wr(t) mod QN) := ev(t, ev_ref(t)); wr(t) := wr(t) + 1; end if;
+            if (ev_valid_new(t) = '1') then qnew(t)(wn(t) mod QN) := ev(t, ev_new(t)); wn(t) := wn(t) + 1; end if;
             -- stream 2 (line-buffer read enables) repeats during pipeline stalls, so it depends on
             -- timing even for identical designs (checked with SELFTEST); it is not compared
             while (t /= 2 and compared(t) < wr(t) and compared(t) < wn(t)) loop
