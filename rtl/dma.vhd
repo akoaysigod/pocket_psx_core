@@ -190,6 +190,7 @@ architecture arch of dma is
       
    signal fifoOut_reset       : std_logic := '0';
    signal fifoOut_Din         : std_logic_vector(52 downto 0);
+   signal DMA_writeData       : std_logic_vector(31 downto 0);   -- for the GPU and the MDEC, each takes it with its enable
    signal fifoOut_Wr          : std_logic; 
    signal fifoOut_Wr_3x       : std_logic; 
    signal fifoOut_Full        : std_logic;
@@ -211,6 +212,9 @@ architecture arch of dma is
    signal ss_out  : t_ssarray := (others => (others => '0'));  
   
 begin 
+
+   DMA_GPU_write  <= DMA_writeData;
+   DMA_MDEC_write <= DMA_writeData;
 
    toDevice <= dmaSettings.D_CHCR(0);
 
@@ -279,6 +283,12 @@ begin
       variable triggerPrio     : unsigned(2 downto 0);
       variable checkIRQ        : std_logic;
       variable addtime         : integer range 0 to 511;
+      -- WORKING adds to REP_target through one adder: repAdd is what the last of the former "REP_target + k"
+      -- assignments of a clock added (0: none)
+      variable repAdd          : integer range 0 to 63;
+      variable madrStep        : unsigned(23 downto 0);
+      variable ramStep         : unsigned(22 downto 0);
+      variable ramSum          : unsigned(23 downto 0);
    begin
       if rising_edge(clk1x) then
       
@@ -695,14 +705,15 @@ begin
                   end if;
                
                when WORKING =>
+                  repAdd := 0;
                   if (fifoIn_Valid = '1' or (useDataDirect = '1' and dma_wr = '1') or (toDevice = '0' and fifoOut_NearFull = '0' and wordAccu = 0 and readStall = '0')) then
-                     REP_target  <= REP_target + 1;
+                     repAdd := 1;
                      case (activeChannel) is
                      
                         when 0 =>
                            if (toDevice = '1') then
                               DMA_MDEC_writeEna <= '1'; 
-                              DMA_MDEC_write    <= dma_data;  
+                              DMA_writeData     <= dma_data;
                            else
                               report "read from MDEC in not possible" severity failure;
                            end if;
@@ -719,7 +730,7 @@ begin
                         when 2 =>
                            if (toDevice = '1') then
                               DMA_GPU_writeEna  <= '1'; 
-                              DMA_GPU_write     <= dma_data;
+                              DMA_writeData     <= dma_data;
                            else
                               fifoOut_Wr                <= not dmaSettings.D_MADR(23);
                               fifoOut_Din(52 downto 32) <= std_logic_vector(dmaSettings.D_MADR(22 downto 2));
@@ -735,7 +746,7 @@ begin
                            
                         when 4 =>
                            REP_required <= '1';
-                           REP_target   <= REP_target + 4;
+                           repAdd       := 4;
                            if (toDevice = '1') then
                               DMA_SPU_writeEna  <= '1';
                               DMA_SPU_write     <= fifoIn_Dout(15 downto 0);
@@ -763,29 +774,27 @@ begin
                         fifoOut_Din(52 downto 51) <= "00";
                      end if;
                      
-                     if (directionNeg = '1')  then 
-                        dmaSettings.D_MADR <= dmaSettings.D_MADR - 4;
-                     else
-                        dmaSettings.D_MADR <= dmaSettings.D_MADR + 4;
-                     end if;
+                     madrStep := (others => directionNeg);   -- - 4 or + 4 through one adder
+                     madrStep(2 downto 0) := "100";
+                     dmaSettings.D_MADR <= dmaSettings.D_MADR + madrStep;
                      
                      -- timing when hitting new bank
                      if (wordcount > 1) then
                         if (directionNeg = '1')  then 
                            if (dmaSettings.D_MADR(9 downto 2) = x"00") then
                               if (toDevice = '1') then
-                                 REP_target   <= REP_target + 5;
+                                 repAdd := 5;
                               else
-                                 REP_target   <= REP_target + 6;
+                                 repAdd := 6;
                               end if;
                               REP_required <= '1';
                            end if;
                         else
                            if (dmaSettings.D_MADR(9 downto 2) = x"FF") then
                               if (toDevice = '1') then
-                                 REP_target   <= REP_target + 5;
+                                 repAdd := 5;
                               else
-                                 REP_target   <= REP_target + 6;
+                                 repAdd := 6;
                               end if;
                               REP_required <= '1';
                            end if;
@@ -796,13 +805,13 @@ begin
                      REP_refresh <= REP_refresh + 1;
                      if (REP_refresh >= 100) then
                         REP_refresh  <= 0;
-                        REP_target   <= REP_target + 6;
+                        repAdd       := 6;
                         REP_required <= '1';
                      end if;
                   
                      -- special timings
                      if (activeChannel = 4 and spu_timing_on = '1' and spu_timing_value > 0) then
-                        REP_target   <= REP_target + 4 + (to_integer(spu_timing_value) * 2);
+                        repAdd       := 4 + (to_integer(spu_timing_value) * 2);
                         REP_required <= '1';
                      end if;
                      
@@ -817,7 +826,7 @@ begin
                         if (REP_refresh >= 100) then
                            addtime := addtime + 6;
                         end if;
-                        REP_target <= REP_target + addtime;
+                        repAdd := addtime;
                      end if; 
                   
                      checkIRQ := '0';
@@ -890,10 +899,11 @@ begin
                      end if;
                      
                      if (ignoreCDTiming = '0' and activeChannel = 3 and cd_memctrl(8) = '1' and com0_delay > 0) then
-                        REP_target <= REP_target + to_integer(com0_delay) - 1;
+                        repAdd := to_integer(com0_delay) - 1;
                      end if;
                      
                   end if;
+                  REP_target <= REP_target + repAdd;
                
                when STOPPING =>
                   autoread <= '0';
@@ -927,11 +937,13 @@ begin
                if (autoread = '1') then
                   ram_ena         <= '1';
                end if;
+               -- - or + (1 + ram_cnt) * 4 through one adder (bit 0 carries the + 1 of the subtraction)
+               ramStep := to_unsigned((1 + to_integer(unsigned(ram_cnt))) * 4, 23);
                if (directionNeg = '1') then
-                  ram_Adr <= std_logic_vector(unsigned(ram_Adr) - ((1 + to_integer(unsigned(ram_cnt))) * 4));
-               else
-                  ram_Adr <= std_logic_vector(unsigned(ram_Adr) + ((1 + to_integer(unsigned(ram_cnt))) * 4));
+                  ramStep := not ramStep;
                end if;
+               ramSum  := (unsigned(ram_Adr) & '1') + (ramStep & directionNeg);
+               ram_Adr <= std_logic_vector(ramSum(23 downto 1));
             end if;
             
             if ((dmaState = WORKING or dmaState = SLOWDOWN) and requestedDwords >= requiredDwords) then

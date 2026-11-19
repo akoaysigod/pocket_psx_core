@@ -155,8 +155,11 @@ architecture arch of gpu_poly is
       u         : unsigned(7 downto 0);
       v         : unsigned(7 downto 0);
    end record;
-   type tRecVertexArray is array(0 to 3) of tVertex;
-   signal rec_vertices        : tRecVertexArray := (others => (0, 0, (others => '0') , (others => '0') , (others => '0') , (others => '0') , (others => '0')));
+   -- Vertices 0..2 are received straight into vt. Only a quad's fourth vertex is kept apart; its second triangle
+   -- (vertices 2, 1, 3) takes vertices 2 and 1 from where the first triangle's sort left them in vt.
+   signal rec_vertex3         : tVertex := (0, 0, (others => '0') , (others => '0') , (others => '0') , (others => '0') , (others => '0'));
+   signal quadV1              : integer range 0 to 2;   -- vt index of vertex 1 after the sort
+   signal quadV2              : integer range 0 to 2;   -- vt index of vertex 2 after the sort
 
    signal rec_index           : integer range 0 to 3;
    
@@ -255,6 +258,11 @@ architecture arch of gpu_poly is
    signal xEnd                : signed(44 downto 0) := (others => '0');
    signal xStepEnd            : signed(44 downto 0) := (others => '0');
    signal decMode             : integer range 0 to 1;
+   -- one adder / subtractor per edge walker: every "- step" happens with decMode = 1 and every "+ step" with
+   -- decMode = 0 (PREPAREDECMODE is only entered with decMode = 1). Bit 0 carries the + 1 of the subtraction.
+   signal decSub              : signed(44 downto 0);
+   signal xStartNext          : signed(45 downto 0);
+   signal xEndNext            : signed(45 downto 0);
    
    signal xPos                : signed(11 downto 0) := (others => '0'); 
    signal yPos                : signed(10 downto 0) := (others => '0'); 
@@ -375,9 +383,15 @@ begin
              unsigned(resize(coreNegY, 32)) when (mulStep = 4) else 
              unsigned(resize(coreNegY, 32));
    
+   decSub     <= (others => '1') when (decMode = 1) else (others => '0');
+   xStartNext <= (xStart & '1') + ((xStepStart xor decSub) & decSub(0));
+   xEndNext   <= (xEnd   & '1') + ((xStepEnd   xor decSub) & decSub(0));
+
    process (clk2x)
       variable xrec12   : signed(11 downto 0);
       variable yrec12   : signed(11 downto 0);
+      variable xrec     : integer range -2048 to 2047;
+      variable yrec     : integer range -2048 to 2047;
       variable cull     : std_logic;    
       variable xMax     : integer;
       variable dx1      : signed(44 downto 0);
@@ -389,7 +403,7 @@ begin
       variable calc1    : signed(44 downto 0);
       variable calc2    : signed(44 downto 0);
       variable calc3    : signed(44 downto 0);
-      variable calc4    : signed(44 downto 0);
+      variable calcDiff : signed(44 downto 0);
       variable stop     : std_logic;
       variable skip     : std_logic; 
       variable uFilter  : unsigned(10 downto 0);
@@ -397,6 +411,9 @@ begin
       variable lBase    : unsigned(31 downto 0);
       variable lOn      : std_logic;
       variable lSum     : unsigned(31 downto 0);
+      variable bCh      : integer range 0 to 4;
+      variable bAdd     : unsigned(31 downto 0);
+      variable bSum     : unsigned(31 downto 0);
    begin
       if rising_edge(clk2x) then
          
@@ -485,19 +502,38 @@ begin
          
             -- line start values, one channel per clock (started by PREPARELINE)
             -- stage 3: sum
+            -- one base select and one adder, used by this stage and by the base sums of CALCCOLOR4 / CALCTEXTURE4.
+            -- The two never meet: lpV2 ends 7 clocks after PREPARELINE, and the next base sum is a whole
+            -- triangle setup (divisions) later.
             if (lpV2 = '1') then
-               case (lpCh2) is
-                  when 0      => lBase := base_R; lOn := rec_shading;
-                  when 1      => lBase := base_G; lOn := rec_shading;
-                  when 2      => lBase := base_B; lOn := rec_shading;
-                  when 3      => lBase := base_U; lOn := rec_texture;
-                  when others => lBase := base_V; lOn := rec_texture;
-               end case;
+               bCh  := lpCh2;
+               bAdd := unsigned(lpY(31 downto 0));
+            else
+               bAdd := mulResult32clk;
+               if (state = CALCTEXTURE4) then
+                  if (mulStep = 1 or mulStep = 3) then bCh := 3; else bCh := 4; end if;
+               else
+                  case (mulStep) is
+                     when 1 | 4  => bCh := 0;
+                     when 2 | 5  => bCh := 1;
+                     when others => bCh := 2;
+                  end case;
+               end if;
+            end if;
+            case (bCh) is
+               when 0      => lBase := base_R; lOn := rec_shading;
+               when 1      => lBase := base_G; lOn := rec_shading;
+               when 2      => lBase := base_B; lOn := rec_shading;
+               when 3      => lBase := base_U; lOn := rec_texture;
+               when others => lBase := base_V; lOn := rec_texture;
+            end case;
+            bSum := lBase + bAdd;
+            if (lpV2 = '1') then
                lSum := lBase;
                if (lOn = '1') then
-                  lSum := lSum + unsigned(lpY(31 downto 0));
+                  lSum := bSum;
                   if (lineX >= 0) then
-                     lSum := lSum + unsigned(lpX(31 downto 0));
+                     lSum := bSum + unsigned(lpX(31 downto 0));
                   end if;
                end if;
                case (lpCh2) is
@@ -548,37 +584,54 @@ begin
                      rec_transparency  <= fifo_data(25);
                      rec_rawTexture    <= fifo_data(24);
                      rec_dithering     <= fifo_data(28) or (fifo_data(26) and (not fifo_data(24)));
-                     for i in 0 to 3 loop
-                        rec_vertices(i).r <= unsigned(fifo_data( 7 downto  0));
-                        rec_vertices(i).g <= unsigned(fifo_data(15 downto  8));
-                        rec_vertices(i).b <= unsigned(fifo_data(23 downto 16));
+                     for i in 0 to 2 loop
+                        vt(i).r <= unsigned(fifo_data( 7 downto  0));
+                        vt(i).g <= unsigned(fifo_data(15 downto  8));
+                        vt(i).b <= unsigned(fifo_data(23 downto 16));
                      end loop;
+                     rec_vertex3.r <= unsigned(fifo_data( 7 downto  0));
+                     rec_vertex3.g <= unsigned(fifo_data(15 downto  8));
+                     rec_vertex3.b <= unsigned(fifo_data(23 downto 16));
                   end if;
                               
                when REQUESTCOLOR =>
                   drawTiming   <= (others => '0');
                   if (fifo_Valid = '1') then
                      state             <= REQUESTPOS;
-                     rec_vertices(rec_index).r <= unsigned(fifo_data( 7 downto  0));
-                     rec_vertices(rec_index).g <= unsigned(fifo_data(15 downto  8));
-                     rec_vertices(rec_index).b <= unsigned(fifo_data(23 downto 16));
+                     if (rec_index = 3) then
+                        rec_vertex3.r <= unsigned(fifo_data( 7 downto  0));
+                        rec_vertex3.g <= unsigned(fifo_data(15 downto  8));
+                        rec_vertex3.b <= unsigned(fifo_data(23 downto 16));
+                     else
+                        vt(rec_index).r <= unsigned(fifo_data( 7 downto  0));
+                        vt(rec_index).g <= unsigned(fifo_data(15 downto  8));
+                        vt(rec_index).b <= unsigned(fifo_data(23 downto 16));
+                     end if;
                   end if;   
                   
                when REQUESTPOS =>
                   drawTiming   <= (others => '0');
                   if (fifo_Valid = '1') then
                      if (drawingOffsetX < 0) then
-                        xrec12                    := resize(drawingOffsetX, 12) + signed('0' & fifo_data(10 downto  0));
-                        rec_vertices(rec_index).x <= to_integer(xrec12(10 downto 0));
+                        xrec12 := resize(drawingOffsetX, 12) + signed('0' & fifo_data(10 downto  0));
+                        xrec   := to_integer(xrec12(10 downto 0));
                      else
-                        rec_vertices(rec_index).x <= to_integer(resize(signed(fifo_data(10 downto  0)),12) + resize(drawingOffsetX, 12));
+                        xrec   := to_integer(resize(signed(fifo_data(10 downto  0)),12) + resize(drawingOffsetX, 12));
                      end if;
                      
                      if (drawingOffsetY < 0) then
-                        yrec12                    := resize(drawingOffsetY, 12) + signed('0' & fifo_data(26 downto 16));    
-                        rec_vertices(rec_index).y <= to_integer(yrec12(10 downto 0));
+                        yrec12 := resize(drawingOffsetY, 12) + signed('0' & fifo_data(26 downto 16));    
+                        yrec   := to_integer(yrec12(10 downto 0));
                      else
-                        rec_vertices(rec_index).y <= to_integer(resize(signed(fifo_data(26 downto 16)),12) + resize(drawingOffsetY, 12));
+                        yrec   := to_integer(resize(signed(fifo_data(26 downto 16)),12) + resize(drawingOffsetY, 12));
+                     end if;
+                     
+                     if (rec_index = 3) then
+                        rec_vertex3.x <= xrec;
+                        rec_vertex3.y <= yrec;
+                     else
+                        vt(rec_index).x <= xrec;
+                        vt(rec_index).y <= yrec;
                      end if;
                      
                      if (rec_texture = '1') then
@@ -599,8 +652,13 @@ begin
                when REQUESTTEXTURE =>
                   drawTiming   <= (others => '0');
                   if (fifo_Valid = '1') then
-                     rec_vertices(rec_index).u <= unsigned(fifo_data( 7 downto  0));
-                     rec_vertices(rec_index).v <= unsigned(fifo_data(15 downto  8));
+                     if (rec_index = 3) then
+                        rec_vertex3.u <= unsigned(fifo_data( 7 downto  0));
+                        rec_vertex3.v <= unsigned(fifo_data(15 downto  8));
+                     else
+                        vt(rec_index).u <= unsigned(fifo_data( 7 downto  0));
+                        vt(rec_index).v <= unsigned(fifo_data(15 downto  8));
+                     end if;
                      if (rec_index = 0) then
                         rec_textPalX  <= unsigned(fifo_data(21 downto 16)) & "0000";
                         rec_textPalY  <= unsigned(fifo_data(30 downto 22));
@@ -632,17 +690,14 @@ begin
                   state    <= SORTVERTICES;
                   nextQuad <= '0';
                   if (rec_quad = '0' or quadFirst = '1') then
-                     vt(0) <= rec_vertices(0);
-                     vt(1) <= rec_vertices(1);
-                     vt(2) <= rec_vertices(2);
-                     quadFirst <= '0';
+                     quadFirst <= '0';   -- vt holds vertices 0, 1, 2 as received
                      if (rec_quad = '1') then
                         nextQuad <= '1';
                      end if;
                   else
-                     vt(0) <= rec_vertices(2);
-                     vt(1) <= rec_vertices(1);
-                     vt(2) <= rec_vertices(3);
+                     vt(0) <= vt(quadV2);
+                     vt(1) <= vt(quadV1);
+                     vt(2) <= rec_vertex3;
                   end if;
                   if (drawingAreaLeft > drawingAreaRight or drawingAreaTop > drawingAreaBottom) then
                      if (REPRODUCIBLEGPUTIMING = '1') then
@@ -656,26 +711,33 @@ begin
                when SORTVERTICES =>
                   state     <= CALCBOUNDARY1;
                   firsthalf <= '1';
+                  quadV1    <= 1;
+                  quadV2    <= 2;
                   if (vt(0).y <= vt(2).y and vt(2).y <= vt(1).y) then -- 0 2 1
                      vt(0) <= vt(0);
                      vt(1) <= vt(2);
                      vt(2) <= vt(1);
+                     quadV1 <= 2; quadV2 <= 1;
                   elsif (vt(1).y <= vt(0).y and vt(0).y <= vt(2).y) then -- 1 0 2
                      vt(0) <= vt(1);
                      vt(1) <= vt(0);
                      vt(2) <= vt(2);
+                     quadV1 <= 0; quadV2 <= 2;
                   elsif (vt(1).y <= vt(2).y and vt(2).y <= vt(0).y) then -- 1 2 0
                      vt(0) <= vt(1);
                      vt(1) <= vt(2);
                      vt(2) <= vt(0);
+                     quadV1 <= 0; quadV2 <= 1;
                   elsif (vt(2).y <= vt(0).y and vt(0).y <= vt(1).y) then -- 2 0 1
                      vt(0) <= vt(2);
                      vt(1) <= vt(0);
                      vt(2) <= vt(1);
+                     quadV1 <= 2; quadV2 <= 0;
                   elsif (vt(2).y <= vt(1).y and vt(1).y <= vt(0).y) then -- 2 1 0
                      vt(0) <= vt(2);
                      vt(1) <= vt(1);
                      vt(2) <= vt(0);
+                     quadV1 <= 1; quadV2 <= 0;
                   end if; -- 0 1 2 requires no resorting
                   
                   if (vt(0).u >= vt(1).u and vt(0).u >= vt(2).u) then 
@@ -896,13 +958,13 @@ begin
                   mulStep <= mulStep + 1;
                   case (mulStep) is
                      when 0 => mulResult32clk <= mulResult32;
-                     when 1 => mulResult32clk <= mulResult32; base_R <= base_R + mulResult32clk;
-                     when 2 => mulResult32clk <= mulResult32; base_G <= base_G + mulResult32clk;   
-                     when 3 => mulResult32clk <= mulResult32; base_B <= base_B + mulResult32clk;
-                     when 4 => mulResult32clk <= mulResult32; base_R <= base_R + mulResult32clk;
-                     when 5 => mulResult32clk <= mulResult32; base_G <= base_G + mulResult32clk;
+                     when 1 => mulResult32clk <= mulResult32; base_R <= bSum;
+                     when 2 => mulResult32clk <= mulResult32; base_G <= bSum;   
+                     when 3 => mulResult32clk <= mulResult32; base_B <= bSum;
+                     when 4 => mulResult32clk <= mulResult32; base_R <= bSum;
+                     when 5 => mulResult32clk <= mulResult32; base_G <= bSum;
                      when 6 =>                                               
-                        base_B <= base_B + mulResult32clk;
+                        base_B <= bSum;
                         if (rec_texture = '1') then
                            state <= CALCTEXTURE1;
                         else
@@ -961,24 +1023,29 @@ begin
                   mulStep <= mulStep + 1;
                   case (mulStep) is
                      when 0 => mulResult32clk <= mulResult32;
-                     when 1 => mulResult32clk <= mulResult32; base_U <= base_U + mulResult32clk;
-                     when 2 => mulResult32clk <= mulResult32; base_V <= base_V + mulResult32clk;   
-                     when 3 => mulResult32clk <= mulResult32; base_U <= base_U + mulResult32clk;
+                     when 1 => mulResult32clk <= mulResult32; base_U <= bSum;
+                     when 2 => mulResult32clk <= mulResult32; base_V <= bSum;   
+                     when 3 => mulResult32clk <= mulResult32; base_U <= bSum;
                      when 4 =>                                               
-                        base_V <= base_V + mulResult32clk;
+                        base_V <= bSum;
                         state <= PREPAREHALF;
                      when others => null;
                   end case;
                   
                when PREPAREHALF =>
                   state <= PREPARELINE;
+                  if (firsthalf = '1') then   -- one adder for both halves
+                     calcDiff := vo_diff_base;
+                  else
+                     calcDiff := vp_diff_base;
+                  end if;
+                  calc2 := baseCoord + calcDiff;
                   if (firsthalf = '1') then
                      firsthalf  <= '0';
                      secondhalf <= '1';
                      yCoord     <= vt(vo).y;
                      yBound     <= vt(1-vo).y;
                      calc1      := (to_signed(vt(vo).x, 13) & x"00000000") + x"100000000" - 2048;
-                     calc2      := baseCoord + vo_diff_base;
                      if (rightFacing = 0) then
                         xStart     <= calc1;
                         xStepStart <= boundCoordUs;
@@ -999,14 +1066,13 @@ begin
                      yCoord     <= vt(1 + vp).y;
                      yBound     <= vt(2 - vp).y;
                      calc3      := (to_signed(vt(1 + vp).x, 13) & x"00000000") + x"100000000" - 2048;
-                     calc4      := baseCoord + vp_diff_base;
                      if (rightFacing = 0) then
                         xStart     <= calc3;
                         xStepStart <= boundCoordLs;
-                        xEnd       <= calc4;
+                        xEnd       <= calc2;
                         xStepEnd   <= baseStep;
                      else
-                        xStart     <= calc4;
+                        xStart     <= calc2;
                         xStepStart <= baseStep;
                         xEnd       <= calc3;
                         xStepEnd   <= boundCoordLs;
@@ -1035,8 +1101,8 @@ begin
                when PREPAREDECMODE =>
                   state  <= PREPARELINE;
                   yCoord <= yCoord - 1;
-                  xStart <= xStart - xStepStart;
-                  xEnd   <= xEnd   - xStepEnd;
+                  xStart <= xStartNext(45 downto 1);
+                  xEnd   <= xEndNext(45 downto 1);
                   
                when PREPARELINE =>
                   if (xStart(43 downto 32) < 0) then
@@ -1101,13 +1167,11 @@ begin
                      state  <= PREPARELINE;
                      if (decMode = 1) then
                         yCoord <= yCoord - 1;
-                        xStart <= xStart - xStepStart;
-                        xEnd   <= xEnd   - xStepEnd;
                      else
                         yCoord <= yCoord + 1;
-                        xStart <= xStart + xStepStart;
-                        xEnd   <= xEnd   + xStepEnd;
                      end if;
+                     xStart <= xStartNext(45 downto 1);
+                     xEnd   <= xEndNext(45 downto 1);
                   end if;
                   
                   if (decMode = 1) then
@@ -1165,15 +1229,12 @@ begin
                      if (xPos + 1 >= xStop) then
                         if (decMode = 1) then
                            yCoord <= yCoord - 1;
-                           xStart <= xStart - xStepStart;
-                           xEnd   <= xEnd   - xStepEnd;
-                           state  <= PREPARELINE;
                         else
                            yCoord <= yCoord + 1;
-                           xStart <= xStart + xStepStart;
-                           xEnd   <= xEnd   + xStepEnd;
-                           state  <= PREPARELINE;
                         end if;
+                        xStart <= xStartNext(45 downto 1);
+                        xEnd   <= xEndNext(45 downto 1);
+                        state  <= PREPARELINE;
                      end if; 
                      
                      if (xPos >= to_integer(drawingAreaLeft) and xPos <= to_integer(drawingAreaRight)) then

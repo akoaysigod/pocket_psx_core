@@ -128,14 +128,12 @@ architecture arch of cpu is
                
    signal cop0_BPC                     : unsigned(31 downto 0) := (others => '0');
    signal cop0_BDA                     : unsigned(31 downto 0) := (others => '0');
-   signal cop0_JUMPDEST                : unsigned(31 downto 0) := (others => '0');
    signal cop0_DCIC                    : unsigned(31 downto 0) := (others => '0');
    signal cop0_BADVADDR                : unsigned(31 downto 0) := (others => '0');
    signal cop0_BDAM                    : unsigned(31 downto 0) := (others => '0');
    signal cop0_BPCM                    : unsigned(31 downto 0) := (others => '0');
    signal cop0_SR                      : unsigned(31 downto 0) := (others => '0');
    signal cop0_CAUSE                   : unsigned(31 downto 0) := (others => '0');
-   signal cop0_EPC                     : unsigned(31 downto 0) := (others => '0');
    signal cop0_PRID                    : unsigned(31 downto 0) := (others => '0');
      
    signal CACHECONTROL                 : unsigned(31 downto 0) := (others => '0');
@@ -169,16 +167,14 @@ architecture arch of cpu is
 
    signal exception_SR                 : unsigned(31 downto 0) := (others => '0');
    signal exception_CAUSE              : unsigned(31 downto 0) := (others => '0');
-   signal exception_EPC                : unsigned(31 downto 0) := (others => '0');
-   signal exception_JMP                : unsigned(31 downto 0) := (others => '0');
+   signal exception_EPC                : unsigned(31 downto 0) := (others => '0'); -- COP0 r14 (EPC)
+   signal exception_JMP                : unsigned(31 downto 0) := (others => '0'); -- COP0 r6 (JUMPDEST)
    
    signal exceptionCode                : unsigned(3 downto 0);
    signal exceptionCode_3              : unsigned(3 downto 0);   
    signal exceptionInstr               : unsigned(1 downto 0);
-   signal exception_PC                 : unsigned(31 downto 0);
    signal exception_branch             : std_logic;
    signal exception_brslot             : std_logic;
-   signal exception_JMPnext            : unsigned(31 downto 0);
                
    signal memoryMuxStage4              : std_logic := '0';
    signal memoryMuxBusy                : std_logic := '0';
@@ -1148,7 +1144,7 @@ begin
    EXEBreakpoint <= '1' when ((cop0_DCIC(31 downto 29) = "111" and cop0_DCIC(24 downto 23) = "11") and (((pcOld1 xor cop0_BPC) and cop0_BPCM) = x"00000000")) else '0';
 
    process (decodeImmData, decodeTarget, decodeJumpTarget, decodeSource1, decodeSource2, decodeValue1, decodeValue2, decodeOP, decodeFunct, decodeShamt, decodeRD, exception, stall3, stall, value1, value2, pcOld0, resultData, executeStalltype,
-            cop0_BPC, cop0_BDA, cop0_JUMPDEST, cop0_DCIC, cop0_BADVADDR, cop0_BDAM, cop0_BPCM, cop0_SR, cop0_CAUSE, cop0_EPC, cop0_PRID, PC, hi, lo, hiloWait, 
+            cop0_BPC, cop0_BDA, exception_JMP, cop0_DCIC, cop0_BADVADDR, cop0_BDAM, cop0_BPCM, cop0_SR, cop0_CAUSE, exception_EPC, cop0_PRID, PC, hi, lo, hiloWait, 
             opcode1, gte_readAddr, decode_gte_readAddr, gte_readData, gte_busy, execute_gte_cmdEna, ce, execute_gte_readAddr, EXEBreakpoint)
       variable calcResult   : unsigned(31 downto 0);
       variable calcMemAddr  : unsigned(31 downto 0);
@@ -1519,14 +1515,14 @@ begin
                            case (to_integer(decodeRD)) is
                               when 16#3# => EXEresultData <= cop0_BPC;
                               when 16#5# => EXEresultData <= cop0_BDA;
-                              when 16#6# => EXEresultData <= cop0_JUMPDEST;
+                              when 16#6# => EXEresultData <= exception_JMP;
                               when 16#7# => EXEresultData <= cop0_DCIC;
                               when 16#8# => EXEresultData <= cop0_BADVADDR;
                               when 16#9# => EXEresultData <= cop0_BDAM;
                               when 16#B# => EXEresultData <= cop0_BPCM;
                               when 16#C# => EXEresultData <= cop0_SR;
                               when 16#D# => EXEresultData <= cop0_CAUSE;
-                              when 16#E# => EXEresultData <= cop0_EPC;
+                              when 16#E# => EXEresultData <= exception_EPC;
                               when 16#F# => EXEresultData <= cop0_PRID;
                               when others => EXEresultData <= (others => '0');
                            end case;
@@ -1763,13 +1759,13 @@ begin
    
    ss_out( 3)               <= std_logic_vector(cop0_BPC);                   
    ss_out( 4)               <= std_logic_vector(cop0_BDA);                   
-   ss_out( 5)               <= std_logic_vector(cop0_JUMPDEST);              
+   ss_out( 5)               <= std_logic_vector(exception_JMP);              
    ss_out( 6)               <= std_logic_vector(cop0_DCIC);                  
    ss_out( 8)               <= std_logic_vector(cop0_BDAM);                  
    ss_out( 9)               <= std_logic_vector(cop0_BPCM);                  
    ss_out(10)               <= std_logic_vector(cop0_SR);                    
    ss_out(11)               <= std_logic_vector(cop0_CAUSE);                 
-   ss_out(12)               <= std_logic_vector(cop0_EPC);                   
+   ss_out(12)               <= std_logic_vector(exception_EPC);                   
    ss_out(13)               <= std_logic_vector(cop0_PRID);  
    
    ss_out(16) <= std_logic_vector(opcode2);
@@ -1818,13 +1814,11 @@ begin
             
             cop0_BPC                      <= unsigned(ss_in(3));
             cop0_BDA                      <= unsigned(ss_in(4));
-            cop0_JUMPDEST                 <= unsigned(ss_in(5));
             cop0_DCIC                     <= unsigned(ss_in(6));
             cop0_BDAM                     <= unsigned(ss_in(8));
             cop0_BPCM                     <= unsigned(ss_in(9));
             cop0_SR                       <= unsigned(ss_in(10));
             cop0_CAUSE                    <= unsigned(ss_in(11));
-            cop0_EPC                      <= unsigned(ss_in(12));
             cop0_PRID                     <= unsigned(ss_in(13)); -- x"00000002";
                        
             --pcOld2                        <= unsigned(ss_in(21));
@@ -1983,8 +1977,6 @@ begin
                   if (executeException = '1') then
                      cop0_SR        <= exception_SR;
                      cop0_CAUSE     <= exception_CAUSE;
-                     cop0_EPC       <= exception_EPC;  
-                     cop0_JUMPDEST  <= exception_JMP;  
                      -- Pocket bring-up
                      if (exception_CAUSE(6 downto 2) /= "00000") then
                         dbg_exc_epc   <= exception_EPC;
@@ -2667,6 +2659,7 @@ begin
    ss_out(54)              <= std_logic_vector(exception_JMP);  
 
    process (clk1x)
+      variable excPC : unsigned(31 downto 0);
    begin
       if (rising_edge(clk1x)) then
 
@@ -2694,7 +2687,6 @@ begin
                if (exceptionNew1 = '1') then    -- PC out of bounds
                   exceptionCode     <= x"6";
                   exceptionInstr    <= opcode2(27 downto 26);
-                  exception_PC      <= PCnext;
                   exception_branch  <= executeBranchTaken;
                   exception_brslot  <= executeBranchdelaySlot;
                elsif (exceptionNew5 = '1') then -- interrupt
@@ -2702,21 +2694,18 @@ begin
                   ss_taken          <= ss_irq;
                   exceptionCode     <= x"0";
                   exceptionInstr    <= opcode1(27 downto 26);
-                  exception_PC      <= pcOld1;
                   exception_branch  <= executeBranchTaken;
                   exception_brslot  <= executeBranchdelaySlot;
                else                             -- execute stage
                   exceptionCode     <= exceptionCode_3;
                   exceptionInstr    <= opcode1(27 downto 26);
                   if (EXEBranchTaken = '1') then
-                     exception_PC      <= PCbranch;
                      exception_branch  <= '0';
                      exception_brslot  <= '0';
                      if (exceptionNew3 = '1') then
                         cop0_BADVADDR     <= PCbranch;
                      end if;
                   else
-                     exception_PC      <= PCold1;
                      exception_branch  <= executeBranchTaken;
                      exception_brslot  <= executeBranchdelaySlot;
                      if (EXEMemWriteException = '1' or EXEReadException = '1') then
@@ -2724,7 +2713,25 @@ begin
                      end if;
                   end if;
                end if;
-               exception_JMPnext <= PCold0;
+               
+               -- EPC and JUMPDEST: the registers MFC0 reads, loaded at the edge that detects the exception. No MFC0
+               -- executes between that edge and the edge SR / CAUSE are committed at: the execute stage is off while
+               -- exception /= 0 and gets a flushed NOP after it.
+               if (exceptionNew /= 0) then
+                  if (exceptionNew1 = '1') then
+                     excPC := PCnext;
+                  else
+                     excPC := pcOld1;
+                  end if;
+                  if (exceptionNew1 = '0' and exceptionNew5 = '0' and EXEBranchTaken = '1') then
+                     exception_EPC <= PCbranch;
+                  elsif (executeBranchdelaySlot = '1') then
+                     exception_EPC <= excPC - 4;
+                     exception_JMP <= PCold0;
+                  else
+                     exception_EPC <= excPC;
+                  end if;
+               end if;
                
                if (exception > 0) then
                   exception_SR    <= cop0_SR(31 downto 6) & cop0_SR(3 downto 0) & "00";
@@ -2733,12 +2740,6 @@ begin
                   exception_CAUSE(29 downto 28) <= exceptionInstr; 
                   exception_CAUSE(30) <= exception_branch;
                   exception_CAUSE(31) <= exception_brslot;
-                  if (exception_brslot = '1') then
-                     exception_EPC <= exception_PC - 4;
-                     exception_JMP <= exception_JMPnext;
-                  else
-                     exception_EPC <= exception_PC;
-                  end if;
                end if;
                
             end if;
@@ -2752,6 +2753,10 @@ begin
 --##############################################################
    
    idivider : entity work.divider
+   generic map
+   (
+      OUTREG    => false   -- hi / lo take the results at hiloWait = 2, after the last cycle
+   )
    port map
    (
       clk       => clk1x,      
