@@ -30,6 +30,13 @@ Status (2026-11-01): works on hardware (963385f seed 9, released as version 0.3)
   so the fifo is now part of a state (see "CD").
 - Release candidate 963385f (seed 9, the data fifo in the state): save states work on hardware (2026-11-01), and
   states saved by the previous release candidate (version 1) load.
+- Version 0.3: save states do not work in Breath of Fire III (hardware), reportedly not in Wild Arms either. Found
+  from the discs and in `sim/cd_equiv` (2026-11-18): the quiet condition waited for empty sector buffers, and these
+  games leave sectors in them for good, so a save never started (see "CD"). Branch save-state-2 (2026-11-21): the
+  sector buffers are part of a state (block version 3). Simulated (see "Tests"); built as version 0.3.3 (seed 11,
+  see "Builds"). On hardware (2026-11-22): saves and loads work in Breath of Fire III and Wild Arms, several games
+  whose save states already worked still do, sleep / wake works. Loading a memory made with 0.3 (block versions 1
+  and 2) was not tried, on hardware or in simulation.
 
 The save / restore round trip
 in the whole-core boot simulation passes (the restored state matches the saved one but for four cosmetic register
@@ -54,9 +61,10 @@ sequencer ~700 ALUTs) and copies the memories through the core: ~2,000-2,600 ALM
 ### Save (APF command 0xA0)
 
 1. pocket_psx raises `ss_req`; psx_top passes it to the CPU as `ss_irq` only while `ss_quiet` (the modules'
-   `SS_idle` but the SPU's and the CD's, and cd_top's quiet: no command, response, interrupt or buffered sector, no
-   sector being processed or copied, engine idle, no command delay running; a sector fetch may be on its way and the
-   data fifo may hold bytes, see "CD"). The SPU's `SS_idle` (IDLE before tick 760, nothing stashed, FIFOs empty)
+   `SS_idle` but the SPU's and the CD's, and cd_top's quiet: no command, response or interrupt, no sector being
+   processed or copied, engine idle, no command delay running; a sector fetch may be on its way, and the data fifo
+   and the sector buffers may hold data, see "CD"). The SPU's `SS_idle` (IDLE before tick 760, nothing stashed,
+   FIFOs empty)
    does not come on the Pocket: with SPU RAM in SDRAM every voice is paced to 24 clocks and the engine barely keeps
    up with its sample periods (in the boot simulation it fell 15 samples behind). The routine handles the SPU itself
    (step 3).
@@ -75,8 +83,9 @@ sequencer ~700 ALUTs) and copies the memories through the core: ~2,000-2,600 ALM
      then holds it in IDLE (held, the SPU counts as idle for the core's pause, whatever it was behind by);
    - collects: scratchpad, memory control, cache control, GTE, I_MASK, DMA, timers, joypad port, GPU (status,
      GP1(10h) 0-7), MDEC (status, control, table copy), CD (IE, volumes, mute, the controller's register file after
-     the firmware's collect run, the data fifo's unread bytes: taken out and put back), SPU registers, hidden SPU
-     state, voice records, the 68 KB of SPU RAM that live on chip; I_STAT last;
+     the firmware's collect run, the data fifo's unread bytes: taken out and put back, the sector buffers: copied
+     out through the fifo), SPU registers, hidden SPU state, voice records, the 68 KB of SPU RAM that live on chip;
+     I_STAT last;
    - reports "captured": pocket_psx pauses the core and answers APF "ok". The pause waits for the modules'
      `SS_idle`; while the freeze is on the CD counts as idle there (a sector fetch may still be on its way, see
      "CD"). A core that has not paused ~2 s after "captured" ends the save with an error and the routine returns.
@@ -92,17 +101,19 @@ sequencer ~700 ALUTs) and copies the memories through the core: ~2,000-2,600 ALM
 2. 0xA4 releases the reset in restore mode: the reset sequence skips the memory clear and keeps the CPU in reset
    until it is through (between its reset pulses the CPU would otherwise run while the sequencer uses the
    memories), then the CPU starts at `SS_VECTOR` with `ss_mode`, `ss_freeze` and the SPU hold on.
-   The block starts with "PSS1" and a version (2: with the CD data fifo; a version 1 block loads with the fifo empty);
+   The block starts with "PSS1" and a version (3: with the CD sector buffers, 2: with the CD data fifo; older blocks
+   load, a version 1 block with the fifo empty, 1 and 2 with the sector buffers empty: those were only taken so);
    a block without them ends the load with an error (the CPU then waits in the routine: load another state or reset
    the core). Bump the version when the block layout or the CD firmware's register allocation (`rtl/cd_fw/cd_fw.py`)
    changes.
 3. The routine invalidates the I-cache (a reset does not clear its tags), then puts back: memory control, scratchpad,
    GPU (GP1 01-08, GP0 E1-E6, texture cache flush, IRQ flag), MDEC tables (commands 2 and 3) and control, SPU
    (registers with no key-on / ADSR latch arming, hidden state, records, on-chip RAM), timers (MODE, TARGET,
-   CURRENT, then the flags), joypad port, CD (register file, the firmware's apply run, the data fifo's bytes, IE,
-   volumes, mute, index), DMA (DPCR, channels, DICR with its flags), GTE (control, then data but SXYP / IRGB / ORGB /
-   LZCR), I_MASK, I_STAT last, COP0 debug registers, then releases the freezes, reports "done" and returns into the
-   game. As the freeze ends cd_top fetches the drive's last sector again (its datapath was reset, see "CD").
+   CURRENT, then the flags), joypad port, CD (register file, the firmware's apply run, the sector buffers, the data
+   fifo's bytes, IE, volumes, mute, index), DMA (DPCR, channels, DICR with its flags), GTE (control, then data but
+   SXYP / IRGB / ORGB / LZCR), I_MASK, I_STAT last, COP0 debug registers, then releases the freezes, reports "done"
+   and returns into the game. As the freeze ends cd_top fetches the drive's last sector again (its datapath was
+   reset, see "CD").
 
 On a wake from sleep the state and the 0xA4 can come while APF still holds the core in reset (zenibako/openfpgaCore#1:
 both are there before its OS starts), and APF may wait for the result before it releases the reset: a load that
@@ -140,7 +151,7 @@ Pocket menu is open, except while a state is saved or loaded: the routine has to
 | GPU | display start, H / V range, drawMode incl. flip bits | GP1(10h) 0, 1, 6, 7 in `ss_mode` |
 | MDEC | quant / scale tables, DMA enables | table copy readback at 1F801828 (auto-increment), control at 1F80182C |
 | SPU | voice records, ENDX, IRQ9, transfer / reverb / capture pointers, on-chip SPU RAM | window 0x1F801F00-0x1F801F1F, hold bit |
-| CD | the controller (cd_ctrl registers, engine register file), the data fifo's unread bytes | see "CD" |
+| CD | the controller (cd_ctrl registers, engine register file), the data fifo's unread bytes, the sector buffers | see "CD" |
 | pad / memory card | protocol state between bytes | excluded by the quiet condition |
 
 ### CD
@@ -150,19 +161,32 @@ registers. On `ss_freeze`, cd_top stops cd_ctrl (its `ce`) at the first clock wi
 and no engine run starting (stopping in the middle of a one-clock pulse would hold it on). In `ss_mode`, with the
 controller stopped and its engine idle:
 
-- 1F801800 bit 2 = not stopped yet, or the engine runs;
-- 1F801801 index 2 write = window control: 0x00-0x3F register index, 0x40 the data fifo (cd_ctrl: register 0),
-  0x80 collect run, 0x81 apply run;
+- 1F801800 bit 2 = not stopped yet, or the engine runs, or a sector buffer is being copied into the data fifo;
+- 1F801801 index 2 write = window control: 0x00-0x3F register index, 0x40 the data fifo, 0x50 + n copy sector
+  buffer n into the data fifo, 0x60 + n (+ 8: a raw sector) load sector buffer n, 0x80 collect run, 0x81 apply run;
 - 1F801801 index 1 write = a byte of a register (bits 31:24 first; the fourth stores it, index + 1); with 0x40 a
-  byte into the data fifo;
-- 1F801802 index 0 read = the next byte of a register (bits 7:0 first; after the fourth, index + 1); with 0x40 the
-  data fifo's next byte (1F801800 bit 6: not empty).
+  byte into the data fifo; with 0x60 + n a byte of a word of that sector buffer (bits 31:24 first; the fourth
+  stores it, next word);
+- 1F801802 index 0 read = the next byte of a register (bits 7:0 first; after the fourth, index + 1); with 0x40 /
+  0x50 + n the data fifo's next byte (1F801800 bit 6: not empty).
 
 The data fifo (what the CPU reads at 1F801802 or by DMA after asking for a sector's data) may hold bytes at a
 snapshot: Resident Evil and Einhänder leave bytes there for seconds (on hardware the fifo was not empty once in a
 save's 2 s), and the quiet condition never held. The routine takes the bytes out into the state block (count at
 0x60C, bytes at 0x13000, at most the fifo's 4 KB; a copy holds at most 2,340), puts them back in order, and a load
 puts them in after the apply run. The sector copy into the fifo is idle at a snapshot (quiet).
+
+The eight sector buffers (a sector the drive delivered waits there until the game asks for its data) may hold
+sectors at a snapshot too. A buffer is only emptied by a request for its data or by the next read's start (Pause
+and seeks keep it), and some games never ask: Breath of Fire III and Wild Arms only acknowledge the filler sectors
+of their XA streams (most sectors of those files) and the sectors that arrive after a load's last one, so with
+"no buffered sector" in the quiet condition (versions 1 and 2) a save in these games never started (it ends with
+an error after ~2 s). The routine saves each buffer through the data fifo (empty then: window control 0x50 + n starts
+the copy the game's request would, without emptying the buffer or raising the missed-sector interrupt; the number of
+bytes that come out is the buffer's size: 0, 2,048 for a data sector, 2,340 for a raw one; sizes at 0x610, bytes at
+0x14000 + n * 0xA00). A load writes them back through the buffer RAM's second port (window control 0x60 + n sets
+the size, cd_ctrl's byte assembly gives the words, the copy's address counter the place). The read and write
+pointers are in the controller's state.
 
 The collect run copies what is not in the variables (cd_ctrl's flags, work and drive delays, sector pointers;
 with speed-settings also allow_speedhack) into four registers; the apply run writes cd_ctrl's registers back from
@@ -269,6 +293,28 @@ the restored core's first request.
   boot's reset sequence.
 - `pocket/sim/boot` round trip with the version 2 routine (963385f, the CD data fifo): captured at 124.4 ms, restore
   done at 36.2 ms, the same four differences; the fifo was empty in the BIOS shell (count 0, compared).
+- The sector buffers in the state (save-state-2, 2026-11-21). `sim/cd_equiv`'s CPU model now also copies the eight
+  buffers out, fills the buffer RAM with other bytes before the reset (a core that ran something else since), loads
+  them and reads them back (an assertion); it asks for a buffer's copy and reads the status in the next clock (busy
+  already), and writes a buffer's bytes one per clock.
+  - FREEZE scripts 0-3: PASS, 0 mismatches each. SSMS=550 on script 1: the summary as before (74 interrupts, 46
+    sectors, 94,208 bytes, data checksum 68225, 62 sector requests, 10,605 audio samples), no buffer in use.
+  - LATE=1 on script 1 (CPUSRC=1; a sector's data is requested at the next interrupt poll): the script's summary.
+    With SSMS=550 SSBUF=1 the save comes at 1,193 ms with one sector (2,048 bytes) in a buffer: the same summary
+    (data checksum 68225; 62 sector requests with the re-fetch; audio as without a save: 10,606 samples, checksum
+    415942). SSNOBUF=1 (the restore leaves the buffers empty): data checksum 107817, the test sees the lost sector.
+  - Scratch variants of the testbench (not in the repo): a game that stops asking for data, and a save request
+    with the drive hold that tries every 1,000 clocks. A load paused 10 ms after its last request (one sector
+    left in a buffer): with the old quiet condition no quiet moment in 2 s (7,517 tries); now saved at the first
+    try. 1.2 s of Breath of Fire III's XA file (240 real sectors from file LBA 100000, mode 0xC8, INT1 only
+    acknowledged; 66 sectors left unasked at the request): old: none in 500 ms (a buffer held a sector in every
+    clock, everything else was quiet in 98.7 % of them; Wild Arms' file the same); now saved at the first try with
+    all eight buffers in use (16,384 bytes), loaded and read back, and the stream goes on (93 more INT1, the XA
+    sectors play).
+  - `pocket/sim/boot` with the version 3 routine: saved at 100 ms in the BIOS shell (captured at 124.4 ms), restore
+    done at 36.2 ms, the same four differences, the buffers empty (sizes compared). The same dump with four sector
+    buffers (2,048 / 2,340 / 2,048 / 2,340 bytes) and 300 data fifo bytes written into its block: the routine loads
+    them and its self-check reads them back: sizes and bytes identical (`compare.py`; restore done at 46.6 ms).
 
 ## Hardware test (first run)
 
@@ -286,6 +332,18 @@ without it the Pocket does not start the core).
 5. Expected after a load: one torn frame, a short click per playing voice, up to one XA sector of silence.
 6. If the Pocket reports an error, or the picture freezes: which step, and whether the core still runs afterwards.
 7. Sleep (power button) during a game, then wake: the game should come back where it was ("Resuming...").
+
+### Hardware test (sector buffers, version 3)
+
+1. Breath of Fire III: save while walking around with music, during a load (a door, a battle start) and in a
+   battle; load each, also after a power cycle. Wild Arms the same.
+2. A memory made with version 0.3 still loads.
+3. Symphony of the Night, Resident Evil, Einhänder as before: save and load during music and in a quiet place.
+4. If a save still fails in a game: a diagnostic build (the diagnostics page of ss-diag-f) shows which quiet
+   condition never held.
+
+Result (2026-11-22, `ssbuf_s11`): 1 works in both games; 3 with several games that already worked, nothing broken;
+sleep / wake works. 2 was not tried.
 
 ## Builds
 
@@ -305,11 +363,15 @@ without it the Pocket does not start the core).
 | ss-feasibility 963385f (+ the CD data fifo in the state), seed 1 (`ssf2s1`): interim test build | 18,006 (97 %) | 1,842 | 289 | setup met; hold -0.017 ns (Fast 0C, savestates ss_reset_2x -> ss_reset, clk2x -> clk1x; MiSTer's path) and -0.002 ns (dma fifoOut) |
 | same, seeds 2-8 (`ssf2s2`-`ssf2s8`) | 18,025-18,118 | 1,838-1,843 | 289 | none met: hold -0.022 / -0.051 / -0.047 / -0.096 ns (seeds 2 / 3 / 6 / 8: mdec, gpu_pixelpipeline stage 3 -> 4), setup -0.350 / -1.054 / -0.309 ns (seeds 4 / 5 / 7: cpuPaused -> sdram, GPU, vram_cdc -> gpu vram_BURSTCNT); no failing path in cd_top, clk1x met setup in every seed |
 | same, seed 9 (`ssf2s9`): version 0.3 | 18,074 (98 %) | 1,842 | 289 | met on every corner (worst +0.003 ns, hold clk2x; setup +0.070 ns) |
+| save-state-2 (main 091b698 + the sector buffers in the state), seed 11 (`ssbuf_s11`): version 0.3.3 | 17,138 (93 %) | 1,839 | 289 | met on every corner (worst setup +0.080 ns clk2x, hold +0.039 ns clk3x) |
+| same, seed 10 (`ssbuf_s10`) | 17,164 | 1,838 | 289 | setup -0.035 / -0.012 ns (clk3x, slow 85C / 0C), hold -0.005 ns (clk3x, fast 0C) |
 
 Zips (gitignored, `releases/`): `akoaysigod.PSX_0.3_ss-feasibility-963385f_seed9.zip` (version 0.3: the seed 9
-bitstream with the 0.3 core.json / info.txt; works on hardware). The earlier test zips (ss-speed 6134206 seed 4,
-ssdiag seed 2 with rtl/mdec_black.vhd over rtl/mdec.vhd, ss-speed 4bf34f4 seed 2, ss-feasibility 258945e seed 5,
-ssdiag-f seed 2, 963385f seed 1) are deleted (2026-11-01). Rebuild with `SEED=n tools/build.sh NAME` at the commit,
+bitstream with the 0.3 core.json / info.txt; works on hardware). `akoaysigod.PSX_0.3.3_ssbuf_s11.zip` (version 0.3.3:
+the seed 11 bitstream with the version 3 `ss_routine.bin`; works on hardware, 2026-11-22; main's seed 10 fit was 17,119
+ALMs / 289 M10K, so the sector buffers cost no block and about 20-45 ALMs). The earlier test zips (ss-speed 6134206
+seed 4, ssdiag seed 2 with rtl/mdec_black.vhd over rtl/mdec.vhd, ss-speed 4bf34f4 seed 2, ss-feasibility 258945e seed
+5, ssdiag-f seed 2, 963385f seed 1) are deleted (2026-11-01). Rebuild with `SEED=n tools/build.sh NAME` at the commit,
 then `tools/release.sh NAME`.
 
 Area changes that made it fit: pocket_cd's sector ring sliced 8K x 1 (32 M10K instead of 19, no 19:1 output mux:

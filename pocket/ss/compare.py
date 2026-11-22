@@ -15,7 +15,7 @@ REGIONS = [
     ('GTE data', 0x200, 0x80, 4), ('GTE control', 0x280, 0x80, 4),
     ('I_STAT / I_MASK', 0x300, 8, 4), ('DMA', 0x310, 0x5C, 4), ('timers', 0x380, 0x30, 4),
     ('joypad', 0x3C0, 8, 4), ('GPU', 0x400, 0x28, 4), ('MDEC', 0x440, 0x110, 4), ('CD', 0x600, 11, 1),
-    ('CD data fifo count', 0x60C, 4, 4),
+    ('CD data fifo count', 0x60C, 4, 4), ('CD sector buffer sizes', 0x610, 0x20, 4),
     ('CD controller', 0x700, 0x100, 4),
     ('SPU registers', 0x800, 0x300, 2), ('SPU hidden', 0xB00, 8, 2), ('SPU voice records', 0xC00, 0x180, 2),
     ('scratchpad', 0x1000, 0x400, 4), ('SPU capture RAM', 0x2000, 0x1000, 2), ('SPU reverb RAM', 0x3000, 0x10000, 2),
@@ -80,6 +80,13 @@ def main():
     fa, fb = ra[BLOCK + 0x13000:BLOCK + 0x13000 + n], rb[VERIFY + 0x13000:VERIFY + 0x13000 + n]
     print('%-18s %d bytes, %s' % ('CD data fifo', n, 'same' if fa == fb else 'DIFFERENT'))
     diffs += fa != fb
+    sizes = struct.unpack_from('<8I', ra, BLOCK + 0x610) if hdr[1] >= 3 else ()   # version 3: the CD sector buffers
+    for i, n in enumerate(sizes):
+        o = 0x14000 + 0xA00 * i
+        fa, fb = ra[BLOCK + o:BLOCK + o + n], rb[VERIFY + o:VERIFY + o + n]
+        if n:
+            print('%-18s %d bytes, %s' % ('CD sector buffer %d' % i, n, 'same' if fa == fb else 'DIFFERENT'))
+        diffs += fa != fb
     same = ra[:0x200000] == rb[:0x200000]
     print('main RAM (2 MB): %s' % ('same' if same else 'DIFFERENT'))
     if not same:
