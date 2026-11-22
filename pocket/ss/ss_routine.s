@@ -33,7 +33,8 @@
         .equ    CTL_RUN,    0x80            # neither
 
         .equ    MAGIC,      0x31535350      # "PSS1"
-        .equ    VERSION,    2               # 2: + the CD data fifo (version 1 blocks load, with the fifo empty)
+        .equ    VERSION,    3               # 2: + the CD data fifo, 3: + the CD sector buffers (older blocks load:
+                                            # a version 1 block with the fifo empty, 1 and 2 with the buffers empty)
 
 # ---------------------------------------------------------------- state block layout (byte offsets)
         .equ    B_MAGIC,    0x000
@@ -64,6 +65,7 @@
         .equ    B_CD,       0x600           # bytes: status, IE, next00, next01, vol11, next10, next11, mute,
                                             #        vol00, vol01, vol10
         .equ    B_CDFCNT,   0x60C           # CD data fifo: number of unread bytes (at B_CDFIFO)
+        .equ    B_CDBCNT,   0x610           # CD sector buffers 0-7: bytes in each (0 empty, 2,048 data, 2,340 raw sector)
         .equ    B_CDREGS,   0x700           # CD controller engine's register file (64 words; cd_fw.py)
         .equ    B_SPUREG,   0x800           # SPU 1F801C00-1F801EFF
         .equ    B_SPUHID,   0xB00           # SPU window lanes 7, 8, 10, 12 (halfwords)
@@ -72,6 +74,8 @@
         .equ    B_SPUCAP,   0x2000          # on-chip SPU RAM: capture buffers (4 KB)
         .equ    B_SPUREV,   0x3000          # on-chip SPU RAM: reverb area 0x70000-0x7FFFF (64 KB), to 0x12FFF
         .equ    B_CDFIFO,   0x13000         # CD data fifo: the unread bytes (up to 4 KB, the fifo's size)
+        .equ    B_CDBUF,    0x14000         # CD sector buffers 0-7: the bytes, CDBUF_STEP apart (to 0x18FFF)
+        .equ    CDBUF_STEP, 0xA00
 
 # ---------------------------------------------------------------- I/O registers (offsets from 0xBF800000)
         .equ    I_STAT,     0x1070
@@ -411,29 +415,45 @@ collect:
         bnez    $t2, 7b
         addiu   $t1, $t1, 1
         # the data fifo: bytes a game left unread (Resident Evil, Einhänder leave a sector's rest for seconds), taken
-        # out (window control 0x40: index 0 1F801802 reads, status bit 6 = not empty), then put back in order
+        # out (window control 0x40: index 0 1F801802 reads, status bit 6 = not empty), put back in order below
         li      $t0, 2
         sb      $t0, CDREG($s1)                 # index 2: window control
         li      $t0, 0x40                       # the data fifo
         sb      $t0, CDREG+1($s1)
-        sb      $zero, CDREG($s1)               # index 0
+        lui     $t1, B_CDFIFO >> 16
+        addu    $t1, $s0, $t1
+        bal     cd_fifo_get
+        addiu   $t1, $t1, B_CDFIFO & 0xFFFF
+        sw      $t2, B_CDFCNT($s0)
+        # the eight sector buffers: sectors the game was given but has not asked for (Breath of Fire III and Wild Arms
+        # never ask for the filler sectors of their XA streams, nor for the sectors after a load's last one). Window
+        # control 0x50 + n copies buffer n into the data fifo (empty now; status bit 2 while that runs), the buffer
+        # stays as it is. The number of bytes is its size: 0 empty, 2,048 a data sector, 2,340 a raw one
+        lui     $t3, B_CDBUF >> 16
+        addu    $t3, $s0, $t3
+        addiu   $t3, $t3, B_CDBUF & 0xFFFF      # this buffer's bytes
+        addiu   $t4, $s0, B_CDBCNT              # this buffer's byte count
+        li      $t5, 0x50
+8:      li      $t0, 2
+        sb      $t0, CDREG($s1)                 # index 2: window control
+        sb      $t5, CDREG+1($s1)
+        bal     cd_wait
+        nop
+        bal     cd_fifo_get
+        move    $t1, $t3
+        sw      $t2, 0($t4)
+        addiu   $t4, $t4, 4
+        addiu   $t5, $t5, 1
+        li      $t0, 0x58
+        bne     $t5, $t0, 8b
+        addiu   $t3, $t3, CDBUF_STEP
+        # the data fifo's bytes back
         lui     $t1, B_CDFIFO >> 16
         addu    $t1, $s0, $t1
         addiu   $t1, $t1, B_CDFIFO & 0xFFFF
-        move    $t2, $zero
-8:      lbu     $t0, CDREG($s1)
-        nop
-        andi    $t0, $t0, 0x40
-        beqz    $t0, 9f
-        nop
-        lbu     $t0, CDREG+2($s1)
-        addiu   $t2, $t2, 1
-        sb      $t0, 0($t1)
-        b       8b
-        addiu   $t1, $t1, 1
-9:      sw      $t2, B_CDFCNT($s0)
+        lw      $t2, B_CDFCNT($s0)
         bal     cd_fifo_put
-        subu    $t1, $t1, $t2
+        nop
         andi    $t8, $t8, 3
         sb      $t8, CDREG($s1)
 
@@ -517,6 +537,24 @@ cd_wait:
         jr      $ra
         nop
 
+# ================================================================ take the CD data fifo's bytes out to t1
+# (window control 0x40-0x5F is set; index 0: 1F801802 reads, status bit 6 = not empty; t2 = their number; uses t0-t2)
+cd_fifo_get:
+        sb      $zero, CDREG($s1)               # index 0
+        move    $t2, $zero
+1:      lbu     $t0, CDREG($s1)
+        nop
+        andi    $t0, $t0, 0x40
+        beqz    $t0, 2f
+        nop
+        lbu     $t0, CDREG+2($s1)
+        addiu   $t2, $t2, 1
+        sb      $t0, 0($t1)
+        b       1b
+        addiu   $t1, $t1, 1
+2:      jr      $ra
+        nop
+
 # ================================================================ put t2 bytes from t1 into the CD data fifo
 # (window control 0x40, index 1: 1F801801 writes; ends at window control 0 = register 0, index 2; uses t0-t2)
 cd_fifo_put:
@@ -550,10 +588,9 @@ restore:
         lui     $t3, MAGIC >> 16
         or      $t2, $t2, $t3
         bne     $t0, $t2, 1f
-        li      $t2, VERSION
-        beq     $t1, $t2, 2f
-        li      $t2, 1                          # version 1: the same but for the CD data fifo
-        beq     $t1, $t2, 2f
+        addiu   $t1, $t1, -1                    # versions 1 to VERSION load (what an older one lacks stays empty)
+        sltiu   $t1, $t1, VERSION
+        bnez    $t1, 2f
         nop
 1:      li      $t0, CMD_BAD
         sb      $t0, CTL($s1)
@@ -853,6 +890,48 @@ restore:
         sb      $t0, CDREG+1($s1)
         bal     cd_wait
         nop
+        # the sector buffers (none in a version 1 or 2 block: those were only taken with all of them empty). Window
+        # control 0x60 + n selects buffer n and sets its size (+ 8: a raw sector's 585 words, else a data sector's
+        # 512); index 1 1F801801 writes are then its words' bytes (bits 31:24 first). cd_fifo_put ends the selection
+        lw      $t0, B_VERSION($s0)
+        lui     $t3, B_CDBUF >> 16
+        sltiu   $t0, $t0, 3
+        bnez    $t0, 19f
+        addu    $t3, $s0, $t3
+        addiu   $t3, $t3, B_CDBUF & 0xFFFF      # this buffer's bytes
+        addiu   $t4, $s0, B_CDBCNT              # this buffer's byte count
+        li      $t5, 0x60
+16:     lw      $t2, 0($t4)
+        li      $t6, 512                        # words of a data sector
+        beqz    $t2, 18f                        # empty
+        li      $t0, 2048
+        beq     $t2, $t0, 17f
+        move    $t7, $t5
+        li      $t6, 585                        # words of a raw sector
+        ori     $t7, $t5, 8
+17:     li      $t0, 2
+        sb      $t0, CDREG($s1)                 # index 2: window control
+        sb      $t7, CDREG+1($s1)
+        li      $t0, 1
+        sb      $t0, CDREG($s1)                 # index 1: 1F801801 writes
+        move    $t1, $t3
+20:     lbu     $t0, 3($t1)
+        lbu     $t2, 2($t1)
+        lbu     $t7, 1($t1)
+        sb      $t0, CDREG+1($s1)
+        lbu     $t0, 0($t1)
+        sb      $t2, CDREG+1($s1)
+        sb      $t7, CDREG+1($s1)
+        sb      $t0, CDREG+1($s1)
+        addiu   $t6, $t6, -1
+        bnez    $t6, 20b
+        addiu   $t1, $t1, 4
+18:     addiu   $t4, $t4, 4
+        addiu   $t5, $t5, 1
+        li      $t0, 0x68
+        bne     $t5, $t0, 16b
+        addiu   $t3, $t3, CDBUF_STEP
+19:
         # the data fifo's unread bytes (none in a version 1 block)
         lw      $t0, B_VERSION($s0)
         li      $t1, 1

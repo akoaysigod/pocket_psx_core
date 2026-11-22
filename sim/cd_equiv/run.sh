@@ -16,6 +16,9 @@
 #   SSFIFO=1 (with SSMS): the save waits for a poll at which the new instance's data fifo holds bytes
 #   SPLIT=n: a sector's last n bytes are read at the next interrupt poll (with SSFIFO the save comes in between);
 #   SSNOFIFO=1: the restore leaves the data fifo empty (negative test: the data checksum must differ)
+#   LATE=1: a sector's data is requested at the next interrupt poll, not with its INT1 (with SSBUF=1 the save comes in
+#           between, while the sector is in a sector buffer); SSNOBUF=1: the restore leaves the sector buffers empty
+#           (negative test: the data checksum must differ)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 rtl="$here/../../rtl"
@@ -51,7 +54,7 @@ nvc --std=2008 $L -a "$rtl/dpram.vhd" "$rtl/cd_xa_zigzag.vhd" "$rtl/cd_xa.vhd" $
     cd_top_ref.vhd cd_top_new.vhd "$here/tb_cd_equiv.vhd"
 F=false; [ -n "$FREEZE" ] && F=true
 opt=""   # script 5 / disc window / slow reads / output capture: only the generics that are set (paths without spaces)
-for g in T1N DISCWIN WINLBA WINN SLOWEVERY SLOWUS PLAYLBA XAFILE XACHAN OUTPRE SSMS SSFIFO SSNOFIFO SPLIT; do
+for g in T1N DISCWIN WINLBA WINN SLOWEVERY SLOWUS PLAYLBA XAFILE XACHAN OUTPRE SSMS SSFIFO SSNOFIFO SPLIT LATE SSBUF SSNOBUF; do
    eval v=\${$g:-}
    [ -n "$v" ] && opt="$opt -g$g=$v"
 done

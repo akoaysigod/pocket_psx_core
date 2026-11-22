@@ -130,6 +130,11 @@ entity cd_ctrl is
       ss_ctl_we               : in  std_logic := '0';   -- control byte: 0x00-0x3F register index, 0x80 collect, 0x81 apply
       ss_data_we              : in  std_logic := '0';   -- data byte (bits 31:24 first): the 4th stores the register, index + 1
       ss_wbyte                : in  std_logic_vector(7 downto 0) := (others => '0');
+      -- cd_top's sector buffers are loaded through the same byte assembly: with ss_buf the 4th byte gives the word
+      -- to cd_top (ss_bwe, ss_wword) instead of storing a register
+      ss_buf                  : in  std_logic := '0';
+      ss_wword                : out std_logic_vector(31 downto 0);
+      ss_bwe                  : out std_logic := '0';
       ss_rd                   : in  std_logic := '0';   -- the byte was read (bits 7:0 first): the 4th moves to index + 1
       ss_rbyte                : out std_logic_vector(7 downto 0);
       -- while a save is asked for the drive starts no sector read. With CD audio playing it reads one sector after
@@ -363,11 +368,13 @@ begin
                ss_q(23 downto 16) when ss_rbp = 2 else
                ss_q(31 downto 24);
    calm     <= '1' when (busy = '0' and eng_start = '0' and pA = "00000" and pB = x"00" and pC = "0000000000000") else '0';
+   ss_wword <= ss_wdata;
 
    process (clk)
    begin
       if rising_edge(clk) then
          ss_we  <= '0';
+         ss_bwe <= '0';
          ss_evC <= '0';
          ss_evA <= '0';
          if (ss_we = '1') then
@@ -388,7 +395,8 @@ begin
             ss_wdata <= ss_wdata(23 downto 0) & ss_wbyte;
             ss_wbp   <= ss_wbp + 1;
             if (ss_wbp = 3) then
-               ss_we <= '1';
+               ss_we  <= not ss_buf;
+               ss_bwe <= ss_buf;
             end if;
          end if;
          if (ss_rd = '1') then

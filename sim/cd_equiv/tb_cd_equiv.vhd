@@ -232,6 +232,12 @@ entity tb_cd_equiv is
       SSMS      : integer := -1;
       SSFIFO    : integer := 0;     -- 1: the save waits for a poll at which the new instance's data fifo holds bytes
       SSNOFIFO  : integer := 0;     -- 1: the restore leaves the data fifo empty (negative test of SPLIT / SSFIFO)
+      -- 1: a sector's data is requested at the next interrupt poll, not with its INT1 (a game that leaves sectors in
+      -- the sector buffers); with SSMS / SSBUF the save comes in between, the data checksum shows whether the sector
+      -- came back. SSNOBUF = 1: the restore leaves the sector buffers empty (negative test)
+      LATE      : integer := 0;
+      SSBUF     : integer := 0;     -- 1: the save waits for a poll at which a sector waits for its request (LATE)
+      SSNOBUF   : integer := 0;
       -- > 0: a sector's last SPLIT bytes stay in the data fifo until the next interrupt poll (a game reading the rest
       -- later); with SSMS / SSFIFO the save comes in between, the data checksum shows whether the bytes came back
       SPLIT     : integer := 0
@@ -466,6 +472,7 @@ begin
       variable ce_next  : integer := 4000;      -- clocks to the next ce = 0 burst
       variable ss_done  : boolean := false;     -- SSMS: the save / restore has been made
       variable rest     : integer := 0;         -- SPLIT: bytes of the last sector still to read
+      variable late_s   : boolean := false;     -- LATE: the last INT1's sector has not been requested yet
       alias fifo_empty_new is <<signal .tb_cd_equiv.ginst(1).gnew.icd.FifoData_Empty : std_logic>>;   -- SSFIFO
 
       impure function rnd(n : integer) return integer is   -- 0 .. n-1
@@ -556,6 +563,10 @@ begin
          variable line : string(1 to 64);
          variable n    : integer;
       begin
+         if (late_s) then                     -- LATE: the sector of the INT1 before
+            late_s := false;
+            readsector;
+         end if;
          wr(0, 1);
          rdb(3, rd);
          flags := to_integer(unsigned(rd(2 downto 0)));
@@ -581,7 +592,8 @@ begin
             if (flags = 1) then
                int1s := int1s + 1;
                if (readdata and (SCRIPT /= 3 or rnd(6) /= 0)) then
-                  if (SCRIPT = 3 and rnd(10) = 0) then readsector(1 + rnd(2340)); else readsector; end if;
+                  if (LATE /= 0) then late_s := true;
+                  elsif (SCRIPT = 3 and rnd(10) = 0) then readsector(1 + rnd(2340)); else readsector; end if;
                end if;
             end if;
          end if;
@@ -600,12 +612,65 @@ begin
       end procedure;
       procedure ss_cd(done : out boolean) is
          type tbytes is array(natural range <>) of std_logic_vector(7 downto 0);
+         type tbufs is array(0 to 7) of tbytes(0 to 2339);
+         type tints is array(0 to 7) of integer;
          variable regs : tbytes(0 to 255);
          variable v    : tbytes(0 to 8);
          variable st, ie, sf : std_logic_vector(7 downto 0);
          variable ok   : boolean;
          variable fifo : tbytes(0 to 4095);
          variable nf   : integer;
+         variable bufs : tbufs;
+         variable nb   : tints;
+         variable chk  : tbytes(0 to 2339);
+         variable nc, nbufs, nbytes : integer := 0;
+
+         -- sector buffer n into the data fifo (window control 0x50 + n; status bit 2 from the clock after the write
+         -- until the copy is done), then its bytes out of the fifo; cnt = the buffer's size in bytes (0: empty)
+         procedure buf_get(n : integer; b : out tbytes; cnt : out integer) is
+            variable s : std_logic_vector(7 downto 0);
+            variable k : boolean;
+         begin
+            wr(0, 2);
+            bus_addr      <= to_unsigned(1, 4);
+            bus_dataWrite <= std_logic_vector(to_unsigned(16#50# + n, 8));
+            bus_write     <= '1';
+            wait until rising_edge(clk1x);
+            bus_write     <= '0';
+            rdb(0, s);                           -- the read in the clock after the write: busy already
+            assert s(2) = '1' report "CD save state: no busy bit right after a sector buffer's copy was asked for" severity failure;
+            ss_wait_frozen(k);
+            assert k report "CD save state: a sector buffer's copy did not end" severity failure;
+            wr(0, 0);
+            cnt := 0;
+            loop
+               rdb(0, s);
+               exit when s(6) = '0';
+               rdb(2, b(cnt));
+               cnt := cnt + 1;
+            end loop;
+         end procedure;
+
+         -- load sector buffer n (window control 0x60 + n, + 8 for a raw sector's 585 words, else a data sector's
+         -- 512): index 1 writes are its words' bytes, bits 31:24 first; here one write per clock
+         procedure buf_put(n : integer; b : tbytes; cnt : integer) is
+            variable words : integer := 512;
+            variable c     : integer := 16#60# + n;
+         begin
+            if (cnt /= 2048) then words := 585; c := c + 8; end if;
+            wr(0, 2); wr(1, c);
+            wr(0, 1);
+            bus_addr  <= to_unsigned(1, 4);
+            bus_write <= '1';
+            for w in 0 to words - 1 loop
+               for k in 3 downto 0 loop
+                  bus_dataWrite <= b(4 * w + k);
+                  wait until rising_edge(clk1x);
+               end loop;
+            end loop;
+            bus_write <= '0';
+            clk(3);
+         end procedure;
       begin
          done := false;
          assert CPUSRC = 1 and not FREEZE report "SSMS needs CPUSRC=1 without FREEZE" severity failure;
@@ -641,19 +706,31 @@ begin
             rdb(2, fifo(nf));
             nf := nf + 1;
          end loop;
+         -- the sector buffers (sectors the game was given but has not asked for), each through the empty data fifo
+         for n in 0 to 7 loop
+            buf_get(n, bufs(n), nb(n));
+            assert nb(n) = 0 or nb(n) = 2048 or nb(n) = 2340
+               report "CD save state: sector buffer of " & integer'image(nb(n)) & " bytes" severity failure;
+            if (nb(n) > 0) then nbufs := nbufs + 1; nbytes := nbytes + nb(n); end if;
+         end loop;
          wr(0, 2); wr(1, 16#40#);
          wr(0, 1);
          for i in 0 to nf - 1 loop wr(1, to_integer(unsigned(fifo(i)))); end loop;
          wr(0, 2); wr(1, 0);
-         report "CD save state: " & integer'image(nf) & " bytes in the data fifo";
-         -- a reset of the controller (as the core's in restore mode), still frozen afterwards
+         report "CD save state: " & integer'image(nf) & " bytes in the data fifo, " & integer'image(nbufs) &
+                " sector buffers in use (" & integer'image(nbytes) & " bytes)";
+         -- a reset of the controller (as the core's in restore mode), still frozen afterwards. Before it the buffer
+         -- RAM gets other contents, as in a core that ran something else since (a reset does not clear the RAM)
+         chk := (others => x"A5");
+         for n in 0 to 7 loop buf_put(n, chk, 2340); end loop;
+         wr(0, 2); wr(1, 0);
          reset_new <= '1';
          clk(20);
          reset_new <= '0';
          clk(200);
          ss_wait_frozen(ok);
          assert ok report "CD save state: not frozen after the reset" severity failure;
-         -- restore: the register file, the apply run, IE, volumes, mute, index
+         -- restore: the register file, the apply run, the sector buffers, the data fifo, IE, volumes, mute, index
          wr(0, 2); wr(1, 0);
          wr(0, 1);
          for w in 0 to 63 loop
@@ -662,6 +739,21 @@ begin
          wr(0, 2); wr(1, 16#81#);
          ss_wait_frozen(ok);
          assert ok report "CD save state: apply run did not end" severity failure;
+         if (SSNOBUF = 0) then
+            for n in 0 to 7 loop
+               if (nb(n) > 0) then buf_put(n, bufs(n), nb(n)); end if;
+            end loop;
+            -- (not the routine's: the buffers read back as they were saved)
+            for n in 0 to 7 loop
+               buf_get(n, chk, nc);
+               assert nc = nb(n) report "CD save state: sector buffer " & integer'image(n) & " came back with " &
+                                        integer'image(nc) & " bytes, saved " & integer'image(nb(n)) severity failure;
+               for i in 0 to nc - 1 loop
+                  assert chk(i) = bufs(n)(i) report "CD save state: sector buffer " & integer'image(n) & " byte " &
+                                                    integer'image(i) & " differs after the restore" severity failure;
+               end loop;
+            end loop;
+         end if;
          wr(0, 2); wr(1, 16#40#);
          wr(0, 1);
          if (SSNOFIFO = 0) then
@@ -689,7 +781,8 @@ begin
             clk(1000);
             t := t + 1000;
             service(quiet);
-            if (SSMS >= 0 and not ss_done and now >= SSMS * 1 ms and (SSFIFO = 0 or fifo_empty_new = '0')) then
+            if (SSMS >= 0 and not ss_done and now >= SSMS * 1 ms and (SSFIFO = 0 or fifo_empty_new = '0') and
+                (SSBUF = 0 or late_s)) then
                ss_cd(d);
                ss_done := d;
             end if;

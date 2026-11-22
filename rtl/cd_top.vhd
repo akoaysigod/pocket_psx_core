@@ -16,8 +16,8 @@ entity cd_top is
       clk_engine           : in  std_logic := '0';
       eng_busy             : out std_logic;
       ce                   : in  std_logic;
-      -- Pocket save states: ss_quiet = nothing in flight (no command, response, interrupt or buffered sector; a
-      -- sector fetch may be, and the data fifo may hold bytes, see "save states" below), the only moment a snapshot
+      -- Pocket save states: ss_quiet = nothing in flight (no command, response or interrupt; a sector fetch may be,
+      -- and the data fifo and the sector buffers may hold data, see "save states" below), the only moment a snapshot
       -- is taken; while the routine runs (ss_mode) the write-only volume / mute registers read back
       -- ss_freeze (set by the routine): the controller (cd_ctrl) stops at the next clock with nothing in flight; in
       -- ss_mode the routine reads / writes the controller engine's register file (see cd_ctrl, "save states")
@@ -573,8 +573,15 @@ architecture arch of cd_top is
    signal ss_wbyte        : std_logic_vector(7 downto 0) := (others => '0');
    signal ss_rd           : std_logic := '0';
    signal ss_rbyte        : std_logic_vector(7 downto 0);
-   signal ss_dsel         : std_logic := '0';   -- window control 0x40: the data fifo's bytes instead of the register file
+   signal ss_dsel         : std_logic := '0';   -- window control 0x40-0x7F: the data fifo's bytes instead of the register file
    signal ss_fifo_we      : std_logic := '0';
+   signal ss_bsel         : std_logic := '0';   -- window control 0x60-0x6F: the written bytes are a sector buffer's words
+   signal ss_bset         : std_logic := '0';   -- ... that control byte's pulse: select the buffer, set its size
+   signal ss_bcopy        : std_logic := '0';   -- window control 0x50-0x57 (pulse): copy that sector buffer into the data fifo
+   signal ss_bcopy_1      : std_logic := '0';
+   signal ss_wword        : std_logic_vector(31 downto 0);
+   signal ss_bwe          : std_logic;
+   signal ss_cbusy        : std_logic;
    signal FifoData_WrM    : std_logic;
    signal FifoData_DinM   : std_logic_vector(7 downto 0);
    signal irqPulse        : std_logic := '0';
@@ -655,11 +662,14 @@ begin
          ss_data_we        <= '0';
          ss_fifo_we        <= '0';
          ss_rd             <= '0';
+         ss_bset           <= '0';
+         ss_bcopy          <= '0';
       
          if (reset = '1') then
             
             FifoData_reset  <= '1';
             ss_dsel         <= '0';
+            ss_bsel         <= '0';
             
             irqTimeout      <= 0;
             
@@ -729,9 +739,10 @@ begin
                         
                      when "01" =>
                         case (bus_addr) is
-                           when x"1" => -- sound map write -> do nothing; save states: register file / data fifo byte
-                              ss_data_we <= ss_mode and not ss_dsel;
-                              ss_fifo_we <= ss_mode and ss_dsel;
+                           when x"1" => -- sound map write -> do nothing; save states: register file / data fifo /
+                                        -- sector buffer byte (the last through cd_ctrl's byte assembly, as a register's)
+                              ss_data_we <= ss_mode and (ss_bsel or not ss_dsel);
+                              ss_fifo_we <= ss_mode and ss_dsel and not ss_bsel;
                               ss_wbyte   <= bus_dataWrite;
                            when x"2" =>
                               CDROM_IRQENA <= bus_dataWrite(4 downto 0);
@@ -751,7 +762,12 @@ begin
                               ss_ctl_we  <= ss_mode;
                               ss_wbyte   <= bus_dataWrite;
                               if (ss_mode = '1') then
-                                 ss_dsel <= bus_dataWrite(6) and not bus_dataWrite(7);   -- 0x40 (cd_ctrl: index 0)
+                                 -- 0x40 the data fifo, 0x50 + n copy sector buffer n into it, 0x60 + n (+ 8: a raw
+                                 -- sector) load sector buffer n (cd_ctrl takes these as register indices: not used)
+                                 ss_dsel  <= bus_dataWrite(6) and not bus_dataWrite(7);
+                                 ss_bsel  <= bus_dataWrite(6) and not bus_dataWrite(7) and bus_dataWrite(5);
+                                 ss_bset  <= bus_dataWrite(6) and not bus_dataWrite(7) and bus_dataWrite(5);
+                                 ss_bcopy <= bus_dataWrite(6) and not bus_dataWrite(7) and bus_dataWrite(4) and not bus_dataWrite(5);
                               end if;
                            when x"2" => cdvol_next00 <= bus_dataWrite;
                            when x"3" => cdvol_next01 <= bus_dataWrite;
@@ -779,8 +795,9 @@ begin
             end if; -- end bus write
          
             if (bus_read = '1' and ss_mode = '1' and bus_addr = x"0") then
-               -- save states: bit 2 = the controller is not frozen yet or its engine runs
-               bus_dataRead <= CDROM_STATUS(7 downto 3) & (eng_busy or not cd_frozen) & CDROM_STATUS(1 downto 0);
+               -- save states: bit 2 = the controller is not frozen yet, its engine runs, or a sector buffer is being
+               -- copied into the data fifo
+               bus_dataRead <= CDROM_STATUS(7 downto 3) & (eng_busy or not cd_frozen or ss_bcopy or ss_cbusy) & CDROM_STATUS(1 downto 0);
             elsif (bus_read = '1' and ss_mode = '1' and CDROM_STATUS(1 downto 0) = "00" and bus_addr = x"2") then
                -- save states: the next byte of the register file, or with ss_dsel of the data fifo
                if (ss_dsel = '0') then
@@ -1006,11 +1023,16 @@ begin
       end if;
    end process;
 
-   -- save states: nothing in flight (no command, response, interrupt or buffered sector, engine idle, no sector
-   -- being processed or copied); the controller freezes (cd_ctrl's ce low) at the first such clock without a pulse or
-   -- an engine start once the routine asks for it (ss_freeze), so its state holds still for the routine from then on.
+   -- save states: nothing in flight (no command, response or interrupt, engine idle, no sector being processed or
+   -- copied); the controller freezes (cd_ctrl's ce low) at the first such clock without a pulse or an engine start
+   -- once the routine asks for it (ss_freeze), so its state holds still for the routine from then on.
    -- The data fifo may hold bytes: games leave a sector's rest unread for seconds (Resident Evil, Einhänder; on
    -- hardware a save never found it empty), the routine saves and restores them (ss_dsel).
+   -- The sector buffers may hold sectors the game was given but has not asked for: some games never ask (Breath of
+   -- Fire III and Wild Arms acknowledge the filler sectors of their XA streams and the sectors after a load's last
+   -- one, and a buffer is only emptied by a request for its data or the next read's start), so a save that waited
+   -- for empty buffers never came. The routine saves them through the data fifo (ss_bcopy) and loads them through
+   -- the buffer RAM's second port (ss_bsel), see the data processing below.
    -- A sector fetch may be in flight: it can wait for APF, and APF delivers nothing while it waits for the save (on
    -- hardware the drive never came to rest during music). The datapath (lastReadSector, the raw sector, its
    -- subchannel and track) is not part of a state: when the freeze ends the last read's sector is fetched again,
@@ -1023,13 +1045,9 @@ begin
           readSubchannelState = SSUB_IDLE and cmdPending = '0' and cmd_busy = '0' and
           FifoParam_Empty = '1' and FifoResponse_Empty = '1' and (working = '0' or workDelay > 16)) then
          ss_quiet_now <= '1';
-         for i in 0 to 7 loop
-            if (sectorBufferSizes(i) /= 0) then
-               ss_quiet_now <= '0';
-            end if;
-         end loop;
       end if;
    end process;
+   ss_cbusy <= '0' when (copyState = COPY_IDLE) else '1';
 
    process (clk1x)
    begin
@@ -1077,7 +1095,7 @@ begin
          processCDDASector => processCDDASector, processSeekHeader => processSeekHeader,
          clearSectorBuffers => clearSectorBuffers, triggerUpdateSubchannel => triggerUpdateSubchannel,
          handleDrive => handleDrive, newCD_1 => newCD_1,
-         eng_busy => eng_busy, quiet => ctrl_quiet, calm => ctrl_calm
+         eng_busy => eng_busy, quiet => ctrl_quiet, calm => ctrl_calm, ss_wword => ss_wword, ss_bwe => ss_bwe
       );
    end generate;
    gctrl : if not SIM_FREEZE generate
@@ -1115,7 +1133,8 @@ begin
          handleDrive => handleDrive, newCD_1 => newCD_1,
          eng_busy => eng_busy, quiet => ctrl_quiet,
          ss_mode => ss_mode, ss_ctl_we => ss_ctl_we, ss_data_we => ss_data_we, ss_wbyte => ss_wbyte, ss_rd => ss_rd,
-         ss_rbyte => ss_rbyte, drive_hold => ss_hold, calm => ctrl_calm
+         ss_rbyte => ss_rbyte, drive_hold => ss_hold, calm => ctrl_calm,
+         ss_buf => ss_bsel, ss_wword => ss_wword, ss_bwe => ss_bwe
       );
    end generate;
 
@@ -1203,10 +1222,11 @@ begin
       data_a      => sectorBuffers_DataA,
       wren_a      => sectorBuffers_wrenA,
       
+      -- the copy into the data fifo reads here; a save state's load writes the buffers here (ss_bsel)
       clock_b     => clk1x,
       address_b   => sectorBuffers_addrB,
-      data_b      => x"00000000",
-      wren_b      => '0',
+      data_b      => ss_wword,
+      wren_b      => ss_bwe,
       q_b         => sectorBuffers_DataB
    );
    
@@ -1676,7 +1696,18 @@ begin
             case (copyState) is
             
                when COPY_IDLE =>
-                  if (copyData = '1' and ce = '1') then
+                  if (ss_bcopy = '1') then
+                     -- save states: this buffer's words into the (empty) data fifo, the buffer stays as it is. The
+                     -- routine counts the bytes it takes out: the buffer's size, none for an empty one
+                     copyCount         <= 0;
+                     copyReadAddr      <= 0;
+                     copyByteCnt       <= 0;
+                     copySectorPointer <= unsigned(ss_wbyte(2 downto 0));
+                     copySize          <= sectorBufferSizes(to_integer(unsigned(ss_wbyte(2 downto 0))));
+                     if (sectorBufferSizes(to_integer(unsigned(ss_wbyte(2 downto 0)))) /= 0) then
+                        copyState      <= COPY_FIRST;
+                     end if;
+                  elsif (copyData = '1' and ce = '1') then
                      copyState         <= COPY_FIRST;
                      copyCount         <= 0;
                      copyReadAddr      <= 0;
@@ -1692,7 +1723,7 @@ begin
                
                when COPY_FIRST =>
                   copyState     <= COPY_DATA;
-                   if (sectorBufferSizes(to_integer(writeSectorPointer)) /= 0) then -- additional irq for missed sector
+                   if (sectorBufferSizes(to_integer(writeSectorPointer)) /= 0 and ss_bcopy_1 = '0') then -- additional irq for missed sector (not for a save state's copy)
                      ackRead_data <= '1';
                   end if;
                
@@ -1736,6 +1767,26 @@ begin
             if (clearSectorBuffers = '1') then
                sectorBufferSizes <= (others => 0);
 			   firstSectorPending <= '1';
+            end if;
+
+            -- save states, a load: window control 0x60 + n selects sector buffer n and sets its size (+ 8: a raw
+            -- sector's 585 words, else a data sector's 512), then cd_ctrl's byte assembly gives its words, written
+            -- through the buffer RAM's second port at the copy's read address (the copy is idle)
+            ss_bcopy_1 <= ss_bcopy;
+            if (ss_bset = '1') then
+               copySectorPointer <= unsigned(ss_wbyte(2 downto 0));
+               copyReadAddr      <= 0;
+               if (ss_wbyte(3) = '1') then
+                  sectorBufferSizes(to_integer(unsigned(ss_wbyte(2 downto 0)))) <= RAW_SECTOR_OUTPUT_SIZE / 4;
+               else
+                  sectorBufferSizes(to_integer(unsigned(ss_wbyte(2 downto 0)))) <= DATA_SECTOR_SIZE / 4;
+               end if;
+            end if;
+            if (ss_bwe = '1') then
+               copyReadAddr <= copyReadAddr + 1;
+               -- synthesis translate_off
+               sectorBuffers(to_integer(copySectorPointer))(copyReadAddr) <= ss_wword;
+               -- synthesis translate_on
             end if;
 
          end if;
